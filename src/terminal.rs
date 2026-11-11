@@ -683,6 +683,12 @@ impl TerminalView {
         .detach();
     }
 
+    /// Inserts text at the program's cursor without submitting or changing the clipboard.
+    pub fn paste_text(&self, text: &str) {
+        let bytes = self.grid.borrow().vt.paste_bytes(text);
+        self.send(&bytes);
+    }
+
     /// Text as a paste; copied files (Finder, a clipboard manager's image) as
     /// if dropped; an image alone (a screenshot) as Ctrl+V pastes it.
     pub fn paste(&mut self, cx: &mut Context<Self>) {
@@ -690,8 +696,7 @@ impl TerminalView {
         if let Some(paths) = copied_files(&item) {
             self.dropped(paths, cx);
         } else if let Some(text) = item.text() {
-            let bytes = self.grid.borrow().vt.paste_bytes(&text);
-            self.send(&bytes);
+            self.paste_text(&text);
         } else if item.entries().iter().any(|e| matches!(e, ClipboardEntry::Image(_))) {
             self.paste_image(cx);
         }

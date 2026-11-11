@@ -183,7 +183,14 @@ the title bar, panes as cards, a space picker) and `win98`
 writing a new file. The Files panel supports Windows folder paths with spaces,
 parentheses and apostrophes, and preserves Unicode file and folder names
 (including Chinese). Directory links expand as folders; their contents load
-only when expanded.
+only when expanded. Right-click a file or folder and choose **Attach as context**
+to insert its path relative to the last focused AI terminal's working directory
+in this space, then focus that conversation. It preserves the draft and clipboard
+and never presses Enter, including while the AI is working. If no target is clear,
+choose a conversation from the menu. Files and conversations must be on the same
+machine (and drive/share); missing working directories and control characters in
+paths are reported instead of pasted. Paths with spaces are quoted; directory
+contents are not expanded or uploaded.
 
 **Herdr's own layouts and mods are read-only.** They are replaced whole
 on every start. Use settings.json for look (fonts, sizes, theme, colors,
@@ -591,7 +598,9 @@ The main ones:
   `terminal.show {terminal?, pane?}`, `terminal.search` (screen and scrollback;
   find bar state stays with that terminal), `terminal.copy`, `terminal.paste` (copied
   files, such as Finder's or a clipboard manager's image, as if dropped; an image
-  alone as `terminal.paste_image` pastes it), `terminal.paste_image` (Ctrl+V: an
+  alone as `terminal.paste_image` pastes it; optional `{text, terminal?}` inserts
+  explicit text without pressing Enter or changing the clipboard, into that
+  terminal or the focused one), `terminal.paste_image` (Ctrl+V: an
   image, into a terminal on another machine: copied there, its path pasted; on
   Windows, clipboard text is pasted; otherwise Ctrl+V goes to the program, which
   reads the clipboard itself). TIFF and BMP clipboard

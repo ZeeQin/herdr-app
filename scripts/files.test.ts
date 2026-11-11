@@ -127,3 +127,155 @@ test("Files follows directory links one level at a time", async () => {
     await rm(root, { recursive: true, force: true });
   }
 });
+
+class ContextElement {
+  nodes: any[] = [];
+  calls: Record<string, any[]> = {};
+  constructor() {
+    const proxy: ContextElement = new Proxy(this, { get: (target, key: string) => key in target ? (target as any)[key] : (...args: any[]) => {
+      if (key === "child") target.nodes.push(args[0]);
+      else if (key === "children") target.nodes.push(...args[0]);
+      else if (key === "when") { if (args[0]) args[1](proxy); }
+      else target.calls[key] = args;
+      return proxy;
+    } });
+    return proxy;
+  }
+}
+
+function contextHarness() {
+  const commands: any[] = [];
+  const opened: any[] = [];
+  let list: any[] = [], paneList: any[] = [], focus: any = null, menu: any = {};
+  const bindings: Record<string, any> = {
+    View: class {}, focused: () => focus, agents: () => list, panes: () => paneList,
+    div: () => new ContextElement(), svg: () => new ContextElement(), h_flex: () => new ContextElement(), v_flex: () => new ContextElement(), theme: () => ({}),
+    spaces: () => [{ id: "s1", active: true }], props: () => menu,
+    run: (...args: any[]) => commands.push(args), closeOverlay: () => commands.push(["close"]),
+    openOverlay: (options: any) => opened.push(options),
+  };
+  const Files = new Function(...Object.keys(bindings), source.replace(/^import .*;\n/gm, "").replace("export default class Files", "return class Files"))(...Object.values(bindings));
+  const view = new Files();
+  return { view, commands, opened, set(agents: any[], panes: any[], current: any = null) { list = agents; paneList = panes; focus = current; }, menu(value: any) { menu = value; } };
+}
+const contextCx = { notify() {} };
+
+test("Files attaches relative paths to a working agent without submitting or using the clipboard", () => {
+  const h = contextHarness();
+  h.set([{ address: "t1", space: "s1", status: "working" }], [{ terminal: "t1", cwd: "/repo/app" }]);
+  h.view.menu = { root: "/repo", path: "src/中文 file.ts", on: null, space: "s1" };
+  h.view.attach("t1", contextCx);
+  expect(h.commands).toEqual([
+    ["close"],
+    ["terminal.paste", { terminal: "t1", text: ' "../src/中文 file.ts" ' }],
+    ["agent.focus", { terminal: "t1" }],
+  ]);
+});
+
+test("Files rejects cross-machine, unknown cwd and control characters without sending input", () => {
+  for (const [address, cwd, path] of [["remote/t1", "/repo", "file"], ["t1", null, "file"], ["t1", "/repo", "bad\nfile"], ["t1", "/repo", "bad\x1bfile"]]) {
+    const h = contextHarness();
+    h.set([{ address, space: "s1" }], [{ terminal: address, cwd }]);
+    h.view.menu = { root: "/repo", path, on: null, space: "s1" };
+    h.view.attach(address, contextCx);
+    expect(h.commands).toEqual([]);
+    expect(h.view.attachError).toBeTruthy();
+  }
+});
+
+test("Files resolves Windows relative paths and rejects different drives", () => {
+  const h = contextHarness();
+  h.set([{ address: "win/t1", space: "s1" }], [{ terminal: "win/t1", cwd: "c:\\Repo\\app" }]);
+  h.view.menu = { root: "C:/Repo", path: "src/file.ts", on: "win", space: "s1" };
+  h.view.attach("win/t1", contextCx);
+  expect(h.commands[1]).toEqual(["terminal.paste", { terminal: "win/t1", text: " ../src/file.ts " }]);
+  h.commands.length = 0;
+  h.view.menu.root = "D:/Repo";
+  h.view.attach("win/t1", contextCx);
+  expect(h.commands).toEqual([]);
+  expect(h.view.attachError).toBeTruthy();
+});
+
+test("Files targets the last focused agent in this space or offers a choice", () => {
+  const h = contextHarness();
+  const a = { address: "t1", space: "s1" }, b = { address: "t2", space: "s1" };
+  h.set([a, b, { address: "t3", space: "other" }], [], { terminal: "t2", space: "s1" });
+  h.view.lastAgent = new Map();
+  expect(h.view.contextTargets("s1")).toEqual([b]);
+  h.set([a, b], [], { terminal: null, space: "s1" });
+  expect(h.view.contextTargets("s1")).toEqual([b]);
+  h.set([a], []);
+  expect(h.view.contextTargets("s1")).toEqual([a]);
+  h.view.lastAgent.clear();
+  h.set([a, b], []);
+  expect(h.view.contextTargets("s1")).toEqual([a, b]);
+});
+
+test("Files attaches directories, preserves POSIX backslashes, and rejects a vanished target", () => {
+  const h = contextHarness();
+  h.set([{ address: "t1", space: "s1" }], [{ terminal: "t1", cwd: "/repo" }]);
+  h.view.menu = { root: "/repo", path: "src", on: null, space: "s1" };
+  h.view.attach("t1", contextCx);
+  expect(h.commands[1]).toEqual(["terminal.paste", { terminal: "t1", text: " src " }]);
+  h.commands.length = 0;
+  h.view.menu.path = "back\\slash";
+  h.view.attach("t1", contextCx);
+  expect(h.commands[1]).toEqual(["terminal.paste", { terminal: "t1", text: ' "back\\\\slash" ' }]);
+  h.commands.length = 0;
+  h.set([], []);
+  h.view.attach("t1", contextCx);
+  expect(h.commands).toEqual([]);
+  expect(h.view.attachError).toContain("no longer available");
+});
+
+test("Files refuses relative references across Windows network shares", () => {
+  const h = contextHarness();
+  h.set([{ address: "t1", space: "s1" }], [{ terminal: "t1", cwd: "\\\\server\\share\\app" }]);
+  h.view.menu = { root: "\\\\server\\share", path: "src", on: null, space: "s1" };
+  h.view.attach("t1", contextCx);
+  expect(h.commands[1]).toEqual(["terminal.paste", { terminal: "t1", text: " ../src " }]);
+  h.commands.length = 0;
+  h.view.menu.root = "\\\\server\\other";
+  h.view.attach("t1", contextCx);
+  expect(h.commands).toEqual([]);
+  expect(h.view.attachError).toContain("different drive or share");
+});
+
+test("Files follows the actual terminal instead of a stale agent block selection", () => {
+  const h = contextHarness();
+  const a = { address: "t1", space: "s1" }, b = { address: "t2", space: "s1" };
+  h.view.lastAgent = new Map();
+  h.set([a, b], [], { terminal: "t2", agent: "t1", space: "s1" });
+  expect(h.view.contextTargets("s1")).toEqual([b]);
+  h.view.lastAgent.clear();
+  h.set([a, b], [], { terminal: "shell", agent: "t1", space: "s1" });
+  expect(h.view.contextTargets("s1")).toEqual([a, b]);
+});
+
+test("Files right-click captures the file and targets without opening the preview", () => {
+  const h = contextHarness();
+  const agent = { address: "t1", space: "s1" };
+  h.set([agent], [], { terminal: "t1" });
+  Object.assign(h.view, { context: { space: "s1" }, root: "/repo", on: null, entries: new Map([["", [{ name: "src", dir: true }]]]), folders: new Set(), marks: {}, lastAgent: new Map() });
+  const row = h.view.rows("", 0, [], {})[0];
+  let stopped = false;
+  row.calls.on_mouse_down[1]({}, { stop_propagation() { stopped = true; } });
+  expect(stopped).toBe(true);
+  expect(h.view.file).toBeUndefined();
+  expect(h.opened[0]).toMatchObject({ mod: "files", kind: "popup", props: { context: { root: "/repo", path: "src", on: null, space: "s1", targets: [agent] } } });
+});
+
+test("Files popup keyboard chooses the captured target and Escape never pastes", () => {
+  const h = contextHarness();
+  const targets = [{ address: "t1", space: "s1" }, { address: "t2", space: "s1" }];
+  h.set(targets, [{ terminal: "t1", cwd: "/repo" }, { terminal: "t2", cwd: "/repo" }], { terminal: "t1" });
+  h.menu({ overlay: "popup", context: { root: "/repo", path: "file", on: null, space: "s1", targets } });
+  h.view.init({}, { focus_handle: () => ({ focus() {} }) });
+  const handler = h.view.render(contextCx).calls.on_key_down[0];
+  handler({ key: "down" }, contextCx);
+  handler({ key: "enter" }, contextCx);
+  expect(h.commands[1]).toEqual(["terminal.paste", { terminal: "t2", text: " file " }]);
+  h.commands.length = 0;
+  handler({ key: "escape" }, contextCx);
+  expect(h.commands).toEqual([["close"]]);
+});

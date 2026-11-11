@@ -1,7 +1,7 @@
 // A lazy file browser for the focused pane's folder, with bounded read-only previews.
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, Editor, EditorState } from "gpui-base";
-import { spaces, panes, focused, exec, readTextFile, watchFolder, theme, settings, window } from "herdr";
+import { spaces, panes, agents, focused, exec, readTextFile, watchFolder, theme, settings, window, props, openOverlay, closeOverlay, run } from "herdr";
 
 function location() {
   const space = spaces().find(s => s.active), f = focused();
@@ -12,6 +12,26 @@ function location() {
 const key = () => JSON.stringify(location());
 const LANG = { ts: "js", tsx: "js", mts: "js", cts: "js", jsx: "js", mjs: "js", toml: "yaml", jsonc: "json", svelte: "html", vue: "html" };
 const PER_FOLDER = 500, TOTAL = 5000;
+
+function relativePath(file, cwd) {
+  const windows = /^[a-z]:[\\/]|^(?:\\\\|\/\/)/i.test(cwd);
+  const parts = value => {
+    if (windows) value = value.replace(/\\/g, "/");
+    const root = windows ? value.match(/^(?:[a-z]:|\/\/[^/]+\/[^/]+)(?=\/|$)/i)?.[0] : value.startsWith("/") ? "/" : null;
+    if (!root) throw new Error("Cannot determine a relative path for this terminal");
+    const rest = [];
+    for (const part of value.slice(root.length).split("/")) {
+      if (part === "..") rest.pop();
+      else if (part && part !== ".") rest.push(part);
+    }
+    return { root, rest };
+  };
+  const from = parts(cwd), to = parts(file), same = (a, b) => windows ? a.toLowerCase() === b.toLowerCase() : a === b;
+  if (!same(from.root, to.root)) throw new Error("Cannot attach a path on a different drive or share");
+  let common = 0;
+  while (common < from.rest.length && common < to.rest.length && same(from.rest[common], to.rest[common])) common++;
+  return [...from.rest.slice(common).map(() => ".."), ...to.rest.slice(common)].join("/") || ".";
+}
 
 async function directory(path, on) {
   const windowsDirectory = async () => {
@@ -40,10 +60,56 @@ async function directory(path, on) {
 
 export default class Files extends View {
   init(_props, cx) {
+    this.menu = props()?.context;
+    if (this.menu) {
+      this.handle = cx.focus_handle(); this.handle.focus(); this.at = 0;
+      return;
+    }
+    this.lastAgent = new Map();
     this.saved = new Map();
     this.entries = new Map(); this.folders = new Set(); this.pending = new Set(); this.marks = {};
     this.refresh(cx);
     cx.timer.every(10000, cx => this.refresh(cx));
+  }
+
+  contextTargets(space) {
+    const all = agents().filter(a => a.space === space), f = focused();
+    const current = all.find(a => a.address === (f?.shown || f?.terminal));
+    if (current) this.lastAgent.set(space, current.address);
+    const last = all.find(a => a.address === this.lastAgent.get(space));
+    return last ? [last] : all;
+  }
+
+  attach(address, cx) {
+    try {
+      const { root, path, on, space } = this.menu;
+      if (!agents().some(a => a.address === address && a.space === space)) throw new Error("This AI conversation is no longer available");
+      const machine = address.includes("/") ? address.split("/")[0] : null;
+      if (machine !== on) throw new Error("The file and AI conversation must be on the same machine");
+      const cwd = panes().find(p => p.terminal === address)?.cwd;
+      if (!cwd) throw new Error("The AI terminal's working directory is unavailable");
+      const relative = relativePath(`${root}/${path}`, cwd);
+      if (/[\x00-\x1f\x7f-\x9f]/.test(relative)) throw new Error("Cannot attach a path containing control characters");
+      const text = ` ${/[\s"\\]/.test(relative) ? JSON.stringify(relative) : relative} `;
+      closeOverlay(props()?.overlay);
+      run("terminal.paste", { terminal: address, text });
+      run("agent.focus", { terminal: address });
+    } catch (error) { this.attachError = String(error.message ?? error); cx.notify(); }
+  }
+
+  contextMenu() {
+    const t = theme(), targets = this.menu.targets;
+    return v_flex().id("files-context").track_focus(this.handle).p(5).bg(t.popover).text_color(t.foreground).text_size(13)
+      .on_key_down((e, cx) => {
+        if (e.key === "escape") closeOverlay(props()?.overlay);
+        else if (targets.length && e.key === "enter") this.attach(targets[this.at].address, cx);
+        else if (targets.length && (e.key === "up" || e.key === "down")) { this.at = (this.at + (e.key === "down" ? 1 : targets.length - 1)) % targets.length; cx.notify(); }
+      })
+      .when(targets.length !== 1, el => el.child(div().p(8).text_color(t.dim).child(targets.length ? "Attach as context to…" : "No AI conversation in this workspace")))
+      .children(targets.map((a, i) => div().id(`attach-${a.address}`).px(8).py(7).rounded(7).cursor_pointer()
+        .when(i === this.at, el => el.bg(t.selected)).hover(s => s.bg(t.hover))
+        .on_click((_e, cx) => this.attach(a.address, cx)).child(targets.length === 1 ? "Attach as context" : a.title ? `${a.title} · ${a.address}` : a.address)))
+      .when(Boolean(this.attachError), el => el.child(div().p(8).text_color(t.ansi1).child(this.attachError)));
   }
 
   watch(root, cx) {
@@ -70,11 +136,11 @@ export default class Files extends View {
   }
 
   refresh(cx) {
-    const { cwd, on } = location(), next = key();
+    const { cwd, on, space } = location(), next = key();
     if (next !== this.context?.key) {
       if (this.context) this.saved.set(this.context.key, { folders: this.folders, file: this.file });
       const saved = this.saved.get(next);
-      this.context = { key: next, cwd, on }; this.root = cwd; this.on = on; this.entries = new Map(); this.folders = new Set(saved?.folders);
+      this.context = { key: next, cwd, on, space }; this.root = cwd; this.on = on; this.entries = new Map(); this.folders = new Set(saved?.folders);
       this.pending = new Set(); this.marks = {}; this.show(null); this.watched = null; this.error = null; this.limited = false;
       this.loading = false;
       if (saved?.file) this.show(saved.file, cx);
@@ -153,6 +219,11 @@ export default class Files extends View {
       if (out.length >= TOTAL) break;
       const path = prefix ? `${prefix}/${entry.name}` : entry.name, open = this.folders.has(path), mark = this.marks[`${this.root}/${path}`];
       out.push(h_flex().id(`file-${path}`).h(28).flex_none().pl(8 + depth * 18).pr(8).gap(7).items_center().rounded(7).cursor_pointer().hover(s => s.bg(t.hover))
+        .on_mouse_down("right", (_e, cx) => {
+          cx.stop_propagation();
+          const space = this.context.space;
+          openOverlay({ mod: "files", kind: "popup", width: 290, props: { context: { root: this.root, path, on: this.on, space, targets: this.contextTargets(space) } } });
+        })
         .on_click((_e, cx) => entry.dir ? this.toggle(path, cx) : this.show(path, cx))
         .child(entry.dir ? svg(`mods/files/chevron-${open ? "down" : "right"}.svg`).size(12).flex_none().text_color(t.dim) : div().w(12).flex_none())
         .child(svg(`mods/files/${entry.dir ? "folder" : "file"}.svg`).size(14).flex_none().text_color(t.muted))
@@ -164,6 +235,8 @@ export default class Files extends View {
   }
 
   render(cx) {
+    if (this.menu) return this.contextMenu();
+    this.contextTargets(location().space);
     if (key() !== this.context?.key) this.refresh(cx);
     const t = theme();
     return v_flex().id("files").size_full().min_h(0).rounded(10).overflow_hidden().bg(t.background).border_1().border_color(t.border).text_color(t.foreground).text_size(13)

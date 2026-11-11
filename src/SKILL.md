@@ -80,6 +80,12 @@ terminal's screen and scrollback; Enter and Shift-Enter move between matches,
 Escape closes the bar while its find field has focus, and each terminal keeps its own query (reopening selects it, so typing replaces it).
 Clicking the terminal while the bar is open puts typing, including Escape, back in the program; the bar and its matches stay.
 
+`terminal.paste {text, terminal?}` inserts text at the program's cursor without
+pressing Enter or changing the clipboard. Omit `text` to paste clipboard contents;
+omit `terminal` to use the focused terminal. Files' **Attach as context** menu
+uses this to add a relative file or directory path to the last focused AI
+conversation in the space, preserving its draft for the person to send.
+
 It prints the created IDs (for example `{ "pane": "...", "terminal": "..." }`)
 or `{ "error": "..." }` and exits 1. Read the result, then inspect `ls` or
 `status` to confirm. Commands invoked by an agent never open a missing-argument

@@ -64,7 +64,7 @@ pub const COMMANDS: &[Command] = &[
     cmd("terminal.show", &[opt("terminal"), opt("pane")], "Show a terminal in a pane for now, in place of its own (no terminal: back)."),
     cmd("terminal.copy", &[], "Copy the focused terminal's selection. With nothing selected, that key goes to the program."),
     cmd("terminal.scroll", &[opt("lines"), opt("pages"), opt("to"), opt("terminal")], "Scroll a terminal's view of its history (default: the focused one). Give exactly one of: lines (a whole number; negative goes up, toward history), pages (a number, fractions allowed; one page is the terminal's rows), to: \"top\" (oldest history) or \"bottom\" (the live screen). This scrolls Herdr's view, not the program."),
-    cmd("terminal.paste", &[], "Paste into the focused terminal (copied files as if dropped; an image alone as terminal.paste_image pastes it)."),
+    cmd("terminal.paste", &[opt("text"), opt("terminal")], "Paste text without pressing Enter into a terminal (default: the focused one), leaving the clipboard unchanged. Without text, paste the clipboard (copied files as if dropped; an image alone as terminal.paste_image pastes it)."),
     cmd("terminal.paste_image", &[], "Ctrl+V: the clipboard's image as a file on the focused terminal's machine, when that's another one; on Windows, paste clipboard text; otherwise Ctrl+V goes to the terminal."),
     cmd("terminal.search", &[], "Search the focused terminal's screen and scrollback; the find bar and query stay with that terminal."),
     cmd("agent.focus", &[req("terminal")], "Show an agent (sub-agents too)."),
@@ -133,7 +133,7 @@ pub fn validate_args(c: &Command, args: &Value) -> Result<(), String> {
                 return Err(format!("{}: unknown argument(s): {}; valid arguments: {valid}", c.name, unknown.join(", ")));
             }
             for (key, value) in args {
-                if matches!(key.as_str(), "id" | "pane" | "space" | "terminal" | "target") && !value.is_string() && !value.is_null() {
+                if matches!(key.as_str(), "id" | "pane" | "space" | "terminal" | "target" | "text") && !value.is_string() && !value.is_null() {
                     return Err(format!("{}: argument {key} must be a string (or null to omit it)", c.name));
                 }
             }
@@ -194,6 +194,17 @@ mod tests {
         assert_eq!(validate_args(close, &json!({"space": "X", "confirmed": true})),
             Err("space.close: unknown argument(s): space; valid arguments: id, confirmed".into()));
         assert!(validate_args(close, &json!({"id": "X", "confirmed": true})).is_ok());
+    }
+
+    #[test]
+    fn explicit_paste_accepts_text_and_target_and_rejects_malformed_text() {
+        let command = find("terminal.paste").unwrap();
+        assert!(validate_args(command, &json!({"terminal": "t7", "text": " src/中文 file.rs "})).is_ok());
+        for text in [json!(true), json!(42), json!([]), json!({})] {
+            assert!(validate_args(command, &json!({"text": text})).is_err());
+        }
+        assert!(validate_args(command, &json!({"text": ""})).is_ok());
+        assert!(validate_args(command, &json!({"text": null})).is_ok());
     }
 
     #[test]

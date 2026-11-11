@@ -62,7 +62,8 @@ export function playSound(sound: string): null;
  *   terminal.keep {terminal, place?} (a running one without a pane, e.g. a sub-agent, gets one),
  *   terminal.park {terminal} (its pane goes, it keeps running; the menu's "Send back"),
  *   terminal.peek {terminal} (peek over the tab, with keep-as-tab and close),
- *   terminal.show {terminal?, pane?} (shown in the pane for now, in place of its own), terminal.copy, terminal.paste,
+ *   terminal.show {terminal?, pane?} (shown in the pane for now, in place of its own), terminal.copy,
+ *   terminal.paste {text?, terminal?} (text without Enter or clipboard changes; omit text for clipboard contents),
  *   terminal.right_click {to: "program" | "menu", terminal?} (right-clicks to a program that takes the mouse; Shift: the menu).
  *   terminal.scroll {lines | pages | to: "top" | "bottom", terminal?} (Herdr's view of the history: negative goes up; pages may be fractional).
  * Agents: agent.next, agent.prev (the agents list's order), agent.focus {terminal} (sub-agents too).
