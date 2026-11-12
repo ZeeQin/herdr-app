@@ -183,7 +183,23 @@ the title bar, panes as cards, a space picker) and `win98`
 writing a new file. The Files panel supports Windows folder paths with spaces,
 parentheses and apostrophes, and preserves Unicode file and folder names
 (including Chinese). Directory links expand as folders; their contents load
-only when expanded.
+only when expanded. Right-click a file or folder and choose **Attach as context**
+to insert its path relative to the last focused AI terminal's working directory
+in this space, then focus that conversation. It preserves the draft and clipboard
+and never presses Enter, including while the AI is working. If no target is clear,
+choose a conversation from the menu. Files and conversations must be on the same
+machine (and drive/share); missing working directories and control characters in
+paths are reported instead of pasted. Paths with spaces are quoted; directory
+contents are not expanded or uploaded. Single-click selects a file; double-click
+opens a centered, read-only preview (Close or Esc dismisses it). Markdown opens
+rendered and can switch to Source; other text, including JSON and Java, uses the
+source viewer. Images fit the preview area and support wheel zoom, zoom buttons,
+and Fit; use the scrollbars to inspect a zoomed image. Text reads are limited to
+1 MiB and displayed text to 400,000 characters; image reads are limited to 4 MiB,
+including remote files. PDFs use the bundled renderer, open at page 1, and support
+previous/next page, a page count, and zoom. PDF inputs have the same 4 MiB limit;
+password-protected PDFs are unsupported. Unsupported, missing or unreadable files
+show an error.
 
 **Herdr's own layouts and mods are read-only.** They are replaced whole
 on every start. Use settings.json for look (fonts, sizes, theme, colors,
@@ -591,7 +607,9 @@ The main ones:
   `terminal.show {terminal?, pane?}`, `terminal.search` (screen and scrollback;
   find bar state stays with that terminal), `terminal.copy`, `terminal.paste` (copied
   files, such as Finder's or a clipboard manager's image, as if dropped; an image
-  alone as `terminal.paste_image` pastes it), `terminal.paste_image` (Ctrl+V: an
+  alone as `terminal.paste_image` pastes it; optional `{text, terminal?}` inserts
+  explicit text without pressing Enter or changing the clipboard, into that
+  terminal or the focused one), `terminal.paste_image` (Ctrl+V: an
   image, into a terminal on another machine: copied there, its path pasted; on
   Windows, clipboard text is pasted; otherwise Ctrl+V goes to the program, which
   reads the clipboard itself). TIFF and BMP clipboard
@@ -1017,6 +1035,12 @@ All of it is in `herdr.d.ts`. In short:
   rejects if the check fails (failed checks are not cached); start one with `argv: agent.run`.
   `pickFolder({ prompt })`: the system's folder picker (here only),
   resolves with the folder or null.
+- PDF previews: `renderPdf(path, { page: 1, width: 1600 })` renders one local
+  PDF staged under `appHome()/data/files` (up to 4 MiB), off the UI thread.
+  It returns `{ path, width, height, pages }`; use `image(path)` and remove
+  the generated PNG when done. Width is capped at 4096 and the output at
+  4 million pixels. Invalid/password-protected PDFs reject; no external
+  tool is needed. Stage remote PDF bytes locally before rendering.
 - Files: `readTextFile(path, { on })` (here, or on that machine),
   `writeTextFile(path, text, expected)` (here only), and
   `watchFolder(dir)` (here only; poll a remote space's folder): resolves with the changed paths the next time anything

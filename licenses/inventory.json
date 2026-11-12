@@ -191,6 +191,27 @@
       "files": [
         "LICENSE"
       ]
+    },
+    {
+      "name": "PDF preview standard fonts (PDFium / Foxit)",
+      "source": "hayro-font 0.5.0 assets: https://crates.io/crates/hayro-font/0.5.0",
+      "files": [
+        "licenses/hayro-fonts.txt"
+      ]
+    },
+    {
+      "name": "PDF preview predefined CMaps (Adobe)",
+      "source": "hayro-cmap 0.1.1 assets: https://crates.io/crates/hayro-cmap/0.1.1",
+      "files": [
+        "licenses/hayro-cmaps.txt"
+      ]
+    },
+    {
+      "name": "PDF preview color profiles",
+      "source": "hayro-interpret 0.9.0 assets: https://crates.io/crates/hayro-interpret/0.9.0",
+      "files": [
+        "licenses/hayro-profiles.txt"
+      ]
     }
   ]
 }

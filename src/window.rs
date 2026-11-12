@@ -1628,7 +1628,7 @@ impl AppWindow {
             let view = t.view.read(cx);
             (view.owns_keyboard_focus(window, cx), view.on_screen_this_frame(), own_pane.as_deref() == Some(pane.as_str()))
         });
-        best.map(|(_, t)| t.view.clone()).ok_or_else(|| format!("terminal {address:?} is running but not shown in this window, so it has no view to scroll"))
+        best.map(|(_, t)| t.view.clone()).ok_or_else(|| format!("terminal {address:?} is running but has no view in this window"))
     }
 
     fn scroll_terminal(&self, args: &Value, window: &Window, cx: &mut Context<Self>) -> Result<(), String> {
@@ -3189,10 +3189,24 @@ impl AppWindow {
                 t.view.update(cx, |view, cx| view.open_search(window, cx));
                 return;
             }
-            "terminal.copy" | "terminal.paste" | "terminal.paste_image" => {
+            "terminal.paste" => {
+                let view = match Self::owned(a, "terminal") {
+                    Some(address) => self.shown_terminal_view(&address, window, cx),
+                    None => self.focused_terminal(window, cx).map(|t| t.view.clone()).ok_or_else(|| "no focused terminal to paste into".into()),
+                };
+                let view = match view {
+                    Ok(view) => view,
+                    Err(error) => return self.fail(error),
+                };
+                view.update(cx, |view, cx| match Self::arg(a, "text") {
+                    Some(text) => view.paste_text(text),
+                    None => view.paste(cx),
+                });
+                return;
+            }
+            "terminal.copy" | "terminal.paste_image" => {
                 if let Some(t) = self.focused_terminal(window, cx) {
                     t.view.update(cx, |v, cx| match name {
-                        "terminal.paste" => v.paste(cx),
                         "terminal.paste_image" => v.paste_image(cx),
                         // A command, not a key: copy and leave the selection.
                         _ => { let _ = v.copy(cx); }

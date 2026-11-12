@@ -24,6 +24,12 @@ export function appHome(): string;
 /** Reads UTF-8 text (up to 1 MiB), or null if absent. Runs off the UI thread.
  *  `on`: from that machine (a space's `machine`). */
 export function readTextFile(path: string, options?: { on?: string | null }): Promise<string | null>;
+/** Renders one page of a local PDF staged under appHome()/data/files (up to 4 MiB).
+ *  Bundled CPU renderer; no external tool required. Page is 1-based (default 1).
+ *  Width defaults to 1600, maximum 4096; output is bounded to 4 million pixels.
+ *  Returns an app-relative path for image(). Caller owns and removes the generated PNG.
+ *  Password-protected/invalid PDFs and invalid page numbers reject. Runs off the UI thread. */
+export function renderPdf(path: string, options?: { page?: number; width?: number }): Promise<{ path: string; width: number; height: number; pages: number }>;
 /** Writes UTF-8 text only if it still matches expected (null creates a new file).
  * Rejects on a stale snapshot; existing files are replaced atomically. */
 export function writeTextFile(path: string, text: string, expected: string | null): Promise<null>;
@@ -62,7 +68,8 @@ export function playSound(sound: string): null;
  *   terminal.keep {terminal, place?} (a running one without a pane, e.g. a sub-agent, gets one),
  *   terminal.park {terminal} (its pane goes, it keeps running; the menu's "Send back"),
  *   terminal.peek {terminal} (peek over the tab, with keep-as-tab and close),
- *   terminal.show {terminal?, pane?} (shown in the pane for now, in place of its own), terminal.copy, terminal.paste,
+ *   terminal.show {terminal?, pane?} (shown in the pane for now, in place of its own), terminal.copy,
+ *   terminal.paste {text?, terminal?} (text without Enter or clipboard changes; omit text for clipboard contents),
  *   terminal.right_click {to: "program" | "menu", terminal?} (right-clicks to a program that takes the mouse; Shift: the menu).
  *   terminal.scroll {lines | pages | to: "top" | "bottom", terminal?} (Herdr's view of the history: negative goes up; pages may be fractional).
  * Agents: agent.next, agent.prev (the agents list's order), agent.focus {terminal} (sub-agents too).

@@ -80,6 +80,12 @@ terminal's screen and scrollback; Enter and Shift-Enter move between matches,
 Escape closes the bar while its find field has focus, and each terminal keeps its own query (reopening selects it, so typing replaces it).
 Clicking the terminal while the bar is open puts typing, including Escape, back in the program; the bar and its matches stay.
 
+`terminal.paste {text, terminal?}` inserts text at the program's cursor without
+pressing Enter or changing the clipboard. Omit `text` to paste clipboard contents;
+omit `terminal` to use the focused terminal. Files' **Attach as context** menu
+uses this to add a relative file or directory path to the last focused AI
+conversation in the space, preserving its draft for the person to send.
+
 It prints the created IDs (for example `{ "pane": "...", "terminal": "..." }`)
 or `{ "error": "..." }` and exits 1. Read the result, then inspect `ls` or
 `status` to confirm. Commands invoked by an agent never open a missing-argument
@@ -151,3 +157,14 @@ Never experiment with pointer/key automation on the person's real display.
 When developing the app on Linux, its `scripts/sandbox` provides an isolated
 home, core and display: `up`, `do`, `status`, `shot`, then `down` when done.
 Never stop a server or session you didn't start.
+
+## File previews
+
+The Files panel selects files on a single click and opens a centered read-only
+preview on double-click. Markdown switches between rendered and source views;
+other text uses the source viewer. Images support wheel zoom and Fit. PDFs use
+the bundled renderer with page navigation and zoom (no extra tool installation).
+Close or Esc dismisses the preview. Images/PDFs are bounded to 4 MiB, including
+remote files; password-protected PDFs are unsupported. Custom mods can call
+`renderPdf(path, { page, width })` on a PDF staged under `appHome()/data/files`;
+see `herdr.d.ts` for output and cleanup ownership.
