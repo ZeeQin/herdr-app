@@ -5,7 +5,7 @@
 Install [cargo-about](https://github.com/EmbarkStudios/cargo-about) 0.9.3 and [Bun](https://bun.sh), then run:
 
 ```sh
-cargo install --locked cargo-about --version 0.9.3
+cargo install --locked cargo-about --version 0.9.3 --features cli
 just notices
 ```
 
@@ -16,3 +16,5 @@ just notices
 The copies here come from the sources pinned in `inventory.json`. simdutf's embedded version is 9.0.0 even though Ghostty's Zig package wrapper still says 5.2.8; its TH-derived CPU detection notice is included too. Highway's Apache and BSD notices are both retained. uucode's own license and both nested licenses are included. Zig's MIT license and musl's copyright file cover the bundled Zig runtime and its musl-derived math routines, as well as builds that contain musl itself. The released Linux app uses the system glibc. The core is downloaded separately and ships its own notices.
 
 Cargo-about covers the vendored GPUI crates as part of the Cargo graph. The separate native inventory covers Ghostty's VT build, not the unrelated libraries used only by Ghostty's full desktop app.
+
+PDF previews bundle hayro-font 0.5.0's PDFium/Foxit fonts, hayro-cmap 0.1.1's Adobe predefined CMaps, and hayro-interpret 0.9.0's CC0 color profiles. Their exact upstream asset notices are retained separately in the inventory; Cargo package licenses alone do not cover these asset notices.

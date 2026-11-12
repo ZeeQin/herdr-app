@@ -157,3 +157,14 @@ Never experiment with pointer/key automation on the person's real display.
 When developing the app on Linux, its `scripts/sandbox` provides an isolated
 home, core and display: `up`, `do`, `status`, `shot`, then `down` when done.
 Never stop a server or session you didn't start.
+
+## File previews
+
+The Files panel selects files on a single click and opens a centered read-only
+preview on double-click. Markdown switches between rendered and source views;
+other text uses the source viewer. Images support wheel zoom and Fit. PDFs use
+the bundled renderer with page navigation and zoom (no extra tool installation).
+Close or Esc dismisses the preview. Images/PDFs are bounded to 4 MiB, including
+remote files; password-protected PDFs are unsupported. Custom mods can call
+`renderPdf(path, { page, width })` on a PDF staged under `appHome()/data/files`;
+see `herdr.d.ts` for output and cleanup ownership.

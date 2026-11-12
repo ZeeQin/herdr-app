@@ -1,7 +1,9 @@
 // A lazy file browser for the focused pane's folder, with bounded read-only previews.
-import { View, div, svg } from "gpui-kit";
-import { v_flex, h_flex, Editor, EditorState } from "gpui-base";
-import { spaces, panes, agents, focused, exec, readTextFile, watchFolder, theme, settings, window, props, openOverlay, closeOverlay, run } from "herdr";
+import { View, div, svg, image } from "gpui-kit";
+import { v_flex, h_flex, Editor, EditorState, TextView } from "gpui-base";
+import { spaces, panes, agents, focused, appHome, exec, renderPdf, readTextFile, watchFolder, theme, settings, window, props, openOverlay, closeOverlay, run } from "herdr";
+import { mkdir, writeFile, readdir, unlink, rmdir, exists } from "fs/promises";
+import { Buffer } from "buffer";
 
 function location() {
   const space = spaces().find(s => s.active), f = focused();
@@ -33,6 +35,24 @@ function relativePath(file, cwd) {
   return [...from.rest.slice(common).map(() => ".."), ...to.rest.slice(common)].join("/") || ".";
 }
 
+// Bound base64 twice (remote exec's JSON wrapper) below exec's 8 MiB output limit.
+async function mediaBytes(path, on) {
+  const powershell = async () => exec("powershell", ["-NoProfile", "-Command",
+    "& { param($p) $f=Get-Item -LiteralPath $p -ErrorAction Stop; if ($f.PSIsContainer -or $f.Length -gt 4194304) { throw 'Preview limit: 4 MiB' }; [Convert]::ToBase64String([IO.File]::ReadAllBytes($f.FullName)) } '" + path.replace(/['‘’‚‛]/g, "$&$&") + "'"], { on });
+  let result;
+  if (!on && window()?.platform === "windows") result = await powershell();
+  else {
+    try { result = await exec("sh", ["-c", 'test -f "$1" || exit 1; n=$(wc -c < "$1") || exit 1; test "$n" -le 4194304 || { echo "Preview limit: 4 MiB" >&2; exit 1; }; head -c 4194305 "$1" | base64', "preview", path], { on }); }
+    catch (e) { if (on && String(e).includes("cannot start sh: program not found")) result = await powershell(); else throw e; }
+  }
+  if (result.code !== 0) throw new Error(result.stderr || "Cannot read this file");
+  const encoded = result.stdout.replace(/\s/g, "");
+  if (!encoded || encoded.length > 5592408 || !/^[A-Za-z0-9+/]*={0,2}$/.test(encoded) || encoded.length % 4) throw new Error("Invalid or oversized preview data");
+  const bytes = Buffer.from(encoded, "base64");
+  if (bytes.length > 4194304) throw new Error("Preview limit: 4 MiB");
+  return bytes;
+}
+
 async function directory(path, on) {
   const windowsDirectory = async () => {
     // Windows PowerShell otherwise uses the console code page; exec decodes UTF-8.
@@ -60,6 +80,13 @@ async function directory(path, on) {
 
 export default class Files extends View {
   init(_props, cx) {
+    this.preview = props()?.preview;
+    if (this.preview) {
+      this.handle = cx.focus_handle(); this.handle.focus();
+      this.zoom = 1; this.mode = "rendered"; this.viewport = { width: 800, height: 500 };
+      this.loadPreview(cx);
+      return;
+    }
     this.menu = props()?.context;
     if (this.menu) {
       this.handle = cx.focus_handle(); this.handle.focus(); this.at = 0;
@@ -138,12 +165,11 @@ export default class Files extends View {
   refresh(cx) {
     const { cwd, on, space } = location(), next = key();
     if (next !== this.context?.key) {
-      if (this.context) this.saved.set(this.context.key, { folders: this.folders, file: this.file });
+      if (this.context) this.saved.set(this.context.key, { folders: this.folders, selected: this.selected });
       const saved = this.saved.get(next);
       this.context = { key: next, cwd, on, space }; this.root = cwd; this.on = on; this.entries = new Map(); this.folders = new Set(saved?.folders);
-      this.pending = new Set(); this.marks = {}; this.show(null); this.watched = null; this.error = null; this.limited = false;
+      this.pending = new Set(); this.marks = {}; this.selected = saved?.selected; this.watched = null; this.error = null; this.limited = false;
       this.loading = false;
-      if (saved?.file) this.show(saved.file, cx);
     }
     if (!cwd || this.loading) return;
     const context = this.context;
@@ -193,24 +219,114 @@ export default class Files extends View {
     cx.notify();
   }
 
-  show(path, cx) {
-    this.code?.release(); this.code = null; this.file = path; this.fileError = null;
-    if (!path || !cx) return;
-    const context = this.context, root = this.root, on = this.on;
+  loadPreview(cx) {
+    const { root, path, on } = this.preview;
+    const ext = path.split(".").pop().toLowerCase();
+    this.markdown = ext === "md" || ext === "markdown";
+    this.pdf = ext === "pdf";
     cx.spawn(async cx => {
+      if (this.closed) return;
       try {
-        const text = await readTextFile(`${root}/${path}`, { on });
-        if (this.file !== path || !this.current(context)) return;
-        if (text === null) { this.fileError = "This file is no longer available"; return; }
-        if (text.includes("\0")) { this.fileError = "Binary file · no text preview"; return; }
-        const t = theme(), ext = path.includes(".") ? path.split(".").pop() : "txt";
-        this.code = EditorState.new({ language: LANG[ext] ?? ext, readonly: true,
-          value: text.length > 400000 ? text.slice(0, 400000) + "\n… (file truncated)" : text,
-          font_family: settings().font_family, font_size: 12,
-          syntax: { keyword: t.ansi5, string: t.ansi2, comment: t.dim, function: t.ansi4, type: t.ansi3, number: t.ansi1, constant: t.ansi6 } });
-      } catch { if (this.file === path && this.current(context)) this.fileError = "Cannot preview this file (binary, too large, or unreadable)"; }
-      finally { cx.notify(); }
+        if (this.pdf || ["png", "jpg", "jpeg", "gif", "webp", "bmp", "tiff", "tif", "svg", "ico"].includes(ext)) {
+          const bytes = await mediaBytes(`${root}/${path}`, on);
+          if (this.closed) return;
+          this.temp = `data/files/preview-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+          await mkdir(`${appHome()}/${this.temp}`, { recursive: true });
+          if (this.closed) { await this.removeTemporary(); return; }
+          const staged = `${this.temp}/source.${ext}`;
+          await writeFile(`${appHome()}/${staged}`, bytes);
+          if (this.closed) { await this.removeTemporary(); return; }
+          if (this.pdf) {
+            this.pdfFile = `${appHome()}/${staged}`;
+            await this.readPdfPage(1);
+          } else this.asset = staged;
+        } else {
+          const text = await readTextFile(`${root}/${path}`, { on });
+          if (this.closed) return;
+          if (text === null) throw new Error("This file is no longer available");
+          if (/[\x00-\x08\x0e-\x1f]/.test(text)) throw new Error("Binary file · no preview available");
+          this.text = text.length > 400000 ? text.slice(0, 400000) + "\n… (file truncated)" : text;
+          const t = theme();
+          this.code = EditorState.new({ language: LANG[ext] ?? ext, readonly: true, value: this.text,
+            font_family: settings().font_family, font_size: 12,
+            syntax: { keyword: t.ansi5, string: t.ansi2, comment: t.dim, function: t.ansi4, type: t.ansi3, number: t.ansi1, constant: t.ansi6 } });
+        }
+      } catch (error) { this.fileError = String(error.message ?? error); }
+      finally { if (!this.closed) cx.notify(); }
     });
+  }
+
+  async readPdfPage(page) {
+    this.pageLoading = true; this.fileError = null;
+    try {
+      const result = await renderPdf(this.pdfFile, { page, width: 1600 });
+      if (this.closed) return;
+      const previous = this.asset;
+      this.asset = result.path; this.page = page; this.pages = result.pages;
+      // A failed temporary-file removal is retried by close().
+      if (previous) await unlink(`${appHome()}/${previous}`).catch(() => {});
+    } catch (error) { this.fileError = String(error.message ?? error); }
+    finally { this.pageLoading = false; }
+  }
+
+  turnPage(delta, cx) {
+    const page = (this.page ?? 1) + delta;
+    if (this.closed || !this.pdfFile || this.pageLoading || page < 1 || (this.pages && page > this.pages)) return;
+    this.pageLoading = true;
+    cx.spawn(async cx => { if (this.closed) return; await this.readPdfPage(page); if (!this.closed) cx.notify(); });
+    cx.notify();
+  }
+
+  async close() {
+    this.closed = true;
+    this.code?.release();
+    await this.removeTemporary();
+  }
+
+  async removeTemporary() {
+    if (this.temp) {
+      const dir = `${appHome()}/${this.temp}`;
+      if (!await exists(dir)) return;
+      for (const name of await readdir(dir)) await unlink(`${dir}/${name}`);
+      await rmdir(dir);
+    }
+  }
+
+  changeZoom(factor, cx, reset = false) {
+    this.zoom = reset ? 1 : Math.max(0.1, Math.min(8, this.zoom * factor));
+    cx.notify();
+  }
+
+  previewView() {
+    const t = theme();
+    const button = (id, label, action) => div().id(id).px(10).py(5).rounded(6).cursor_pointer().hover(s => s.bg(t.hover))
+      .on_click(action).child(label);
+    return v_flex().id("files-preview").size_full().min_h(0).overflow_hidden().bg(t.background).text_color(t.foreground).text_size(13)
+      .track_focus(this.handle).on_key_down((e) => { if (e.key === "escape") closeOverlay(props()?.overlay); })
+      .child(h_flex().h(46).flex_none().px(12).gap(6).items_center().border_b(1).border_color(t.border)
+        .child(div().flex_1().min_w(0).truncate().child(this.preview.path))
+        .when(this.markdown, el => el.children([
+          button("preview-rendered", this.mode === "rendered" ? "● Rendered" : "Rendered", (_e, cx) => { this.mode = "rendered"; cx.notify(); }),
+          button("preview-source", this.mode === "source" ? "● Source" : "Source", (_e, cx) => { this.mode = "source"; cx.notify(); })]))
+        .when(this.pdf, el => el.children([
+          button("preview-prev", "←", (_e, cx) => this.turnPage(-1, cx)),
+          div().text_color(t.dim).child(this.pageLoading ? "Rendering…" : `Page ${this.page ?? 1} / ${this.pages ?? "…"}`),
+          button("preview-next", "→", (_e, cx) => this.turnPage(1, cx))]))
+        .when(Boolean(this.pdfFile) && Boolean(this.fileError), el => el.child(button("preview-retry", "Retry", (_e, cx) => this.turnPage(0, cx))))
+        .when(Boolean(this.asset), el => el.children([
+          button("preview-minus", "−", (_e, cx) => this.changeZoom(1 / 1.25, cx)),
+          div().text_color(t.dim).child(`${Math.round(this.zoom * 100)}%`),
+          button("preview-plus", "+", (_e, cx) => this.changeZoom(1.25, cx)),
+          button("preview-fit", "Fit", (_e, cx) => this.changeZoom(1, cx, true))]))
+        .child(button("preview-close", "Close · Esc", () => closeOverlay(props()?.overlay))))
+      .child(this.fileError ? div().p(16).text_color(t.ansi1).child(this.fileError) : this.asset ?
+        div().id("preview-image-scroll").flex_1().min_h(0).overflow_scrollbar()
+          .on_size_change((size, cx) => { this.viewport = size; cx.notify(); })
+          .on_scroll_wheel((e, cx) => { cx.stop_propagation(); this.changeZoom(Math.exp(Math.max(-1, Math.min(1, e.delta.y * 0.005))), cx); })
+          .child(image(this.asset).w(this.viewport.width * this.zoom).h(this.viewport.height * this.zoom).flex_none()) :
+        this.code ? (this.markdown && this.mode === "rendered" ?
+          TextView.markdown("preview-markdown", this.text).selectable(true).scrollable(true).flex_1().min_h(0) : Editor.new(this.code).flex_1().min_h(0)) :
+          div().p(16).text_color(t.dim).child("Loading preview…"));
   }
 
   rows(prefix, depth, out, t) {
@@ -224,7 +340,13 @@ export default class Files extends View {
           const space = this.context.space;
           openOverlay({ mod: "files", kind: "popup", width: 290, props: { context: { root: this.root, path, on: this.on, space, targets: this.contextTargets(space) } } });
         })
-        .on_click((_e, cx) => entry.dir ? this.toggle(path, cx) : this.show(path, cx))
+        .when(this.selected === path, el => el.bg(t.selected))
+        .on_click((e, cx) => {
+          if (entry.dir) { this.toggle(path, cx); return; }
+          this.selected = path; cx.notify();
+          if (e.click_count === 2) openOverlay({ mod: "files", kind: "dialog", width: 0.85, height: 0.85,
+            props: { preview: { root: this.root, path, on: this.on } } });
+        })
         .child(entry.dir ? svg(`mods/files/chevron-${open ? "down" : "right"}.svg`).size(12).flex_none().text_color(t.dim) : div().w(12).flex_none())
         .child(svg(`mods/files/${entry.dir ? "folder" : "file"}.svg`).size(14).flex_none().text_color(t.muted))
         .child(div().flex_1().min_w(0).truncate().child(entry.name))
@@ -235,18 +357,17 @@ export default class Files extends View {
   }
 
   render(cx) {
+    if (this.preview) return this.previewView();
     if (this.menu) return this.contextMenu();
     this.contextTargets(location().space);
     if (key() !== this.context?.key) this.refresh(cx);
     const t = theme();
     return v_flex().id("files").size_full().min_h(0).rounded(10).overflow_hidden().bg(t.background).border_1().border_color(t.border).text_color(t.foreground).text_size(13)
       .child(h_flex().h(42).flex_none().px(14).gap(8).items_center().border_b(1).border_color(t.border)
-        .when(Boolean(this.file), el => el.child(div().id("files-back").w(20).cursor_pointer().text_color(t.muted).on_click((_e, cx) => { this.show(null); cx.notify(); }).child("←")))
         .child(div().font_semibold().child("Files"))
-        .child(div().flex_1().min_w(0).truncate().text_right().text_size(12).text_color(t.dim).child(this.file ?? this.root?.split(/[\\/]/).pop() ?? "")))
-      .when(!this.file, el => el.child(v_flex().id("files-tree").flex_1().min_h(0).overflow_y_scrollbar().p(6).children(this.rows("", 0, [], t))
+        .child(div().flex_1().min_w(0).truncate().text_right().text_size(12).text_color(t.dim).child(this.root?.split(/[\\/]/).pop() ?? "")))
+      .child(v_flex().id("files-tree").flex_1().min_h(0).overflow_y_scrollbar().p(6).children(this.rows("", 0, [], t))
         .when(Boolean(this.error) || !this.entries.get("")?.length, el => el.child(div().p(8).text_size(12).text_color(t.dim).child(this.error || (this.loading ? "Loading files…" : this.root ? "No files" : "No folder"))))
-        .when(this.limited, el => el.child(div().p(8).text_size(11).text_color(t.dim).child("File list limited to 500 entries per folder and 5,000 total")))))
-      .when(Boolean(this.file), el => el.child(this.code ? Editor.new(this.code).flex_1().min_h(0) : div().p(12).text_color(t.dim).child(this.fileError || "Loading file…")));
+        .when(this.limited, el => el.child(div().p(8).text_size(11).text_color(t.dim).child("File list limited to 500 entries per folder and 5,000 total"))));
   }
 }

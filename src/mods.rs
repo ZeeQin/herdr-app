@@ -919,6 +919,10 @@ fn module(inst: Instance, copy: u64) -> HostModule {
                 None => crate::mod_files::read(Path::new(&path)),
             }))
         })
+        .async_function("renderPdf", |a| {
+            let (page, width) = crate::pdf_preview::options(a.get(1).map(from_host).unwrap_or(Value::Null))?;
+            crate::pdf_preview::render(PathBuf::from(a.string(0)?), page, width)
+        })
         .async_function("writeTextFile", |a| {
             let expected = a.get(2).and_then(|v| match v { HostValue::Str(s) => Some(s.clone()), _ => None });
             Ok(crate::mod_files::write_text(a.string(0)?.to_owned(), a.string(1)?.to_owned(), expected))

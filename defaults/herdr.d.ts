@@ -24,6 +24,12 @@ export function appHome(): string;
 /** Reads UTF-8 text (up to 1 MiB), or null if absent. Runs off the UI thread.
  *  `on`: from that machine (a space's `machine`). */
 export function readTextFile(path: string, options?: { on?: string | null }): Promise<string | null>;
+/** Renders one page of a local PDF staged under appHome()/data/files (up to 4 MiB).
+ *  Bundled CPU renderer; no external tool required. Page is 1-based (default 1).
+ *  Width defaults to 1600, maximum 4096; output is bounded to 4 million pixels.
+ *  Returns an app-relative path for image(). Caller owns and removes the generated PNG.
+ *  Password-protected/invalid PDFs and invalid page numbers reject. Runs off the UI thread. */
+export function renderPdf(path: string, options?: { page?: number; width?: number }): Promise<{ path: string; width: number; height: number; pages: number }>;
 /** Writes UTF-8 text only if it still matches expected (null creates a new file).
  * Rejects on a stale snapshot; existing files are replaced atomically. */
 export function writeTextFile(path: string, text: string, expected: string | null): Promise<null>;
