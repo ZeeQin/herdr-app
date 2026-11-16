@@ -301,9 +301,12 @@ Scroll a terminal's view of its history (default: the focused one). Give exactly
 
 ## `terminal.paste`
 
-Paste into the focused terminal (copied files as if dropped; an image alone as terminal.paste_image pastes it).
+Paste text without pressing Enter into a terminal (default: the focused one), leaving the clipboard unchanged. Without text, paste the clipboard (copied files as if dropped; an image alone as terminal.paste_image pastes it).
 
-No arguments.
+| Argument | Required |
+|---|---|
+| `text` | no |
+| `terminal` | no |
 
 ## `terminal.paste_image`
 

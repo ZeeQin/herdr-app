@@ -390,6 +390,9 @@ pub enum Request {
     Run { name: String, args: Value },
     OpenOverlay { id: String, spec: Value },
     CloseOverlay { id: String },
+    OpenWindow { key: String, spec: Value },
+    CloseWindow { key: String },
+    WindowDocument { copy: u64, path: String },
     Refresh,
     /// From `herdr-app do` / `herdr-app status` (control.rs); answer on `reply`.
     Control { cmd: Value, reply: std::sync::mpsc::Sender<Value> },
@@ -686,6 +689,11 @@ pub fn send_command_to(copy: u64, command: &str) -> bool {
     if !SHOWN_COPIES.with(|s| s.borrow().contains(&copy)) {
         return false;
     }
+    deliver_command(copy, command)
+}
+
+/// Delivers browser IPC only to its owning native mod copy.
+pub(crate) fn deliver_command(copy: u64, command: &str) -> bool {
     COMMANDS.with(|c| {
         let mut c = c.borrow_mut();
         c.retain(|(_, _, tx)| !tx.is_closed());
@@ -919,6 +927,10 @@ fn module(inst: Instance, copy: u64) -> HostModule {
                 None => crate::mod_files::read(Path::new(&path)),
             }))
         })
+        .async_function("renderPdf", |a| {
+            let (page, width) = crate::pdf_preview::options(a.get(1).map(from_host).unwrap_or(Value::Null))?;
+            crate::pdf_preview::render(PathBuf::from(a.string(0)?), page, width)
+        })
         .async_function("writeTextFile", |a| {
             let expected = a.get(2).and_then(|v| match v { HostValue::Str(s) => Some(s.clone()), _ => None });
             Ok(crate::mod_files::write_text(a.string(0)?.to_owned(), a.string(1)?.to_owned(), expected))
@@ -1058,6 +1070,21 @@ fn module(inst: Instance, copy: u64) -> HostModule {
         .function("keys", |_| {
             let list: Vec<Value> = crate::keys::listing().into_iter().map(|(s, k, a)| json!({ "section": s, "keys": k, "action": a })).collect();
             Ok(to_host(&Value::Array(list)))
+        })
+        .function("openWindow", |a| {
+            let spec = from_host(a.value(0)?);
+            let key = spec.get("key").and_then(Value::as_str).filter(|s| !s.is_empty()).ok_or_else(|| HostError::new("openWindow needs a nonempty key"))?.to_owned();
+            if spec.get("mod").and_then(Value::as_str).filter(|s| !s.is_empty()).is_none() { return Err(HostError::new("openWindow needs a mod")); }
+            request(Request::OpenWindow { key: key.clone(), spec });
+            Ok(key.into())
+        })
+        .function("closeWindow", |a| {
+            request(Request::CloseWindow { key: a.string(0)?.to_owned() });
+            Ok(HostValue::Null)
+        })
+        .function("setWindowDocument", move |a| {
+            request(Request::WindowDocument { copy, path: a.string(0)?.to_owned() });
+            Ok(HostValue::Null)
         })
         .function("openOverlay", |a| {
             let mut spec = from_host(a.value(0)?);
@@ -1316,6 +1343,10 @@ mod tests {
         assert!(first.is_empty());
         assert!(hidden.is_empty());
         assert!(!send_command_to(3, "focus"));
+        assert!(deliver_command(3, "webview:{\"type\":\"close\"}"));
+        assert_eq!(hidden.try_recv().unwrap(), "webview:{\"type\":\"close\"}");
+        assert!(first.is_empty());
+        assert!(second.is_empty());
         assert!(!send_command_to(99, "focus"));
         // Existing mod key bindings still broadcast to every shown copy.
         assert!(send_command("same-mod", "existing-key"));

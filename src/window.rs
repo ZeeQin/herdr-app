@@ -565,6 +565,7 @@ impl AppWindow {
                 this.drain_documents(window, cx);
                 this.close_mods_now(std::time::Instant::now() + Duration::from_millis(250), window, cx);
             });
+            crate::mod_windows::close_all(cx);
             crate::place::save(window, cx);
             true
         });
@@ -1628,7 +1629,7 @@ impl AppWindow {
             let view = t.view.read(cx);
             (view.owns_keyboard_focus(window, cx), view.on_screen_this_frame(), own_pane.as_deref() == Some(pane.as_str()))
         });
-        best.map(|(_, t)| t.view.clone()).ok_or_else(|| format!("terminal {address:?} is running but not shown in this window, so it has no view to scroll"))
+        best.map(|(_, t)| t.view.clone()).ok_or_else(|| format!("terminal {address:?} is running but has no view in this window"))
     }
 
     fn scroll_terminal(&self, args: &Value, window: &Window, cx: &mut Context<Self>) -> Result<(), String> {
@@ -3189,10 +3190,24 @@ impl AppWindow {
                 t.view.update(cx, |view, cx| view.open_search(window, cx));
                 return;
             }
-            "terminal.copy" | "terminal.paste" | "terminal.paste_image" => {
+            "terminal.paste" => {
+                let view = match Self::owned(a, "terminal") {
+                    Some(address) => self.shown_terminal_view(&address, window, cx),
+                    None => self.focused_terminal(window, cx).map(|t| t.view.clone()).ok_or_else(|| "no focused terminal to paste into".into()),
+                };
+                let view = match view {
+                    Ok(view) => view,
+                    Err(error) => return self.fail(error),
+                };
+                view.update(cx, |view, cx| match Self::arg(a, "text") {
+                    Some(text) => view.paste_text(text),
+                    None => view.paste(cx),
+                });
+                return;
+            }
+            "terminal.copy" | "terminal.paste_image" => {
                 if let Some(t) = self.focused_terminal(window, cx) {
                     t.view.update(cx, |v, cx| match name {
-                        "terminal.paste" => v.paste(cx),
                         "terminal.paste_image" => v.paste_image(cx),
                         // A command, not a key: copy and leave the selection.
                         _ => { let _ = v.copy(cx); }
@@ -3755,6 +3770,9 @@ impl AppWindow {
             Request::Run { name, args } => self.run(&name, args, window, cx),
             Request::OpenOverlay { id, spec } => self.open_overlay(id, spec, window, cx),
             Request::CloseOverlay { id } => self.close_overlay(&id, window, cx),
+            Request::OpenWindow { key, spec } => { crate::mod_windows::open(key, spec, cx); }
+            Request::CloseWindow { key } => crate::mod_windows::close(&key, cx),
+            Request::WindowDocument { copy, path } => crate::mod_windows::document(copy, &path, cx),
             Request::Refresh => self.refresh_mods(cx),
             Request::Control { cmd, reply } => {
                 let _ = reply.send(self.control(cmd, window, cx));

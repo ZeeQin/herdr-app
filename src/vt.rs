@@ -2588,6 +2588,15 @@ mod tests {
     }
 
     #[test]
+    fn path_pastes_do_not_add_enter_or_erase_the_draft() {
+        let mut vt = Vt::new(80, 24);
+        let path = " \"src/中文 file.rs\" ";
+        assert_eq!(vt.paste_bytes(path), path.as_bytes());
+        vt.write(b"\x1b[?2004h");
+        assert_eq!(vt.paste_bytes(path), format!("\x1b[200~{path}\x1b[201~").as_bytes());
+    }
+
+    #[test]
     fn scroll_to_top_reaches_the_oldest_line_and_bottom_returns() {
         let mut vt = Vt::new(20, 5);
         for line in 1..=50 {

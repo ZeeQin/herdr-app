@@ -80,6 +80,12 @@ terminal's screen and scrollback; Enter and Shift-Enter move between matches,
 Escape closes the bar while its find field has focus, and each terminal keeps its own query (reopening selects it, so typing replaces it).
 Clicking the terminal while the bar is open puts typing, including Escape, back in the program; the bar and its matches stay.
 
+`terminal.paste {text, terminal?}` inserts text at the program's cursor without
+pressing Enter or changing the clipboard. Omit `text` to paste clipboard contents;
+omit `terminal` to use the focused terminal. Files' **Attach as context** menu
+uses this to add a relative file or directory path to the last focused AI
+conversation in the space, preserving its draft for the person to send.
+
 It prints the created IDs (for example `{ "pane": "...", "terminal": "..." }`)
 or `{ "error": "..." }` and exits 1. Read the result, then inspect `ls` or
 `status` to confirm. Commands invoked by an agent never open a missing-argument
@@ -151,3 +157,20 @@ Never experiment with pointer/key automation on the person's real display.
 When developing the app on Linux, its `scripts/sandbox` provides an isolated
 home, core and display: `up`, `do`, `status`, `shot`, then `down` when done.
 Never stop a server or session you didn't start.
+
+## File previews
+
+The Files panel selects files on a single click and opens one reusable, read-only
+system window on double-click. Markdown switches rendered/source and renders
+Mermaid. Local/remote-workspace images resolve beside the Markdown document;
+HTTP(S) images load automatically. Clicking an image or diagram opens an enlarged
+view; Esc closes that first, then the preview. Images/PDFs support Fit/100%,
+buttons, macOS pinch zoom and two-finger panning. SVG SMIL/CSS animation plays;
+embedded SVG scripts do not run. Text is truncated at 1 MiB with a notice; staged
+image/SVG inputs are bounded to 20 MiB and PDFs to 50 MiB, including remote files.
+PDFs use the bundled renderer with page navigation; password-protected PDFs are
+unsupported. The browser surface needs WebKit (macOS) or WebView2 (Windows);
+Linux retains the basic native preview and reports browser unavailability.
+Custom mods can call `renderPdf(path, { page, width })` on a PDF staged under
+`appHome()/data/files`, and `openWindow`, `closeWindow`, `setWindowDocument` for
+mod-owned native windows; see `herdr.d.ts` for ownership and browser IPC details.
