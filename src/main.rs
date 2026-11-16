@@ -39,6 +39,7 @@ mod update_notes;
 mod vt;
 mod win32_keys;
 mod window;
+mod mod_windows;
 
 use gpui::*;
 
@@ -178,6 +179,7 @@ fn main() {
                         });
                     }
                 }
+                mod_windows::close_all_now(deadline, cx);
                 mods::finish_shared();
                 telemetry::quit();
                 update::apply();

@@ -160,11 +160,17 @@ Never stop a server or session you didn't start.
 
 ## File previews
 
-The Files panel selects files on a single click and opens a centered read-only
-preview on double-click. Markdown switches between rendered and source views;
-other text uses the source viewer. Images support wheel zoom and Fit. PDFs use
-the bundled renderer with page navigation and zoom (no extra tool installation).
-Close or Esc dismisses the preview. Images/PDFs are bounded to 4 MiB, including
-remote files; password-protected PDFs are unsupported. Custom mods can call
-`renderPdf(path, { page, width })` on a PDF staged under `appHome()/data/files`;
-see `herdr.d.ts` for output and cleanup ownership.
+The Files panel selects files on a single click and opens one reusable, read-only
+system window on double-click. Markdown switches rendered/source and renders
+Mermaid. Local/remote-workspace images resolve beside the Markdown document;
+HTTP(S) images load automatically. Clicking an image or diagram opens an enlarged
+view; Esc closes that first, then the preview. Images/PDFs support Fit/100%,
+buttons, macOS pinch zoom and two-finger panning. SVG SMIL/CSS animation plays;
+embedded SVG scripts do not run. Text is truncated at 1 MiB with a notice; staged
+image/SVG inputs are bounded to 20 MiB and PDFs to 50 MiB, including remote files.
+PDFs use the bundled renderer with page navigation; password-protected PDFs are
+unsupported. The browser surface needs WebKit (macOS) or WebView2 (Windows);
+Linux retains the basic native preview and reports browser unavailability.
+Custom mods can call `renderPdf(path, { page, width })` on a PDF staged under
+`appHome()/data/files`, and `openWindow`, `closeWindow`, `setWindowDocument` for
+mod-owned native windows; see `herdr.d.ts` for ownership and browser IPC details.

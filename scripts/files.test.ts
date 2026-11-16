@@ -2,6 +2,7 @@ import { test, expect } from "bun:test";
 import { readFile, mkdtemp, mkdir, writeFile, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { marked } from "../defaults/mods/files/vendor/marked-module.js";
 
 const source = await readFile(new URL("../defaults/mods/files/main.js", import.meta.url), "utf8");
 const directorySource = source.slice(source.indexOf("async function directory("), source.indexOf("\nexport default class"));
@@ -153,9 +154,22 @@ function contextHarness(extra: Record<string, any> = {}) {
     spaces: () => [{ id: "s1", active: true }], props: () => menu,
     run: (...args: any[]) => commands.push(args), closeOverlay: () => commands.push(["close"]),
     openOverlay: (options: any) => opened.push(options),
+    openWindow: (options: any) => opened.push(options), closeWindow: (key: string) => commands.push(["closeWindow", key]),
+    setWindowDocument: (path: string) => commands.push(["document", path]), nextCommand: () => new Promise(() => {}),
+    Buffer, marked, appHome: () => "/app", mkdir: async () => {}, writeFile: async () => {},
+    readFile: async () => "", buildPreviewPage: (data: any) => JSON.stringify(data),
     ...extra,
   };
-  const Files = new Function(...Object.keys(bindings), source.replace(/^import .*;\n/gm, "").replace("export default class Files", "return class Files"))(...Object.values(bindings));
+  if (!bindings.mediaBytes) bindings.mediaBytes = async (path: string, on: string) => {
+    if (bindings.readTextFile) {
+      const text = await bindings.readTextFile(path, { on });
+      if (text === null) throw new Error("This file is no longer available");
+      return Buffer.from(text);
+    }
+    return Buffer.from("%PDF-1.4");
+  };
+  const viewSource = source.slice(0, source.indexOf("async function mediaBytes(")) + source.slice(source.indexOf("async function directory("));
+  const Files = new Function(...Object.keys(bindings), viewSource.replace(/^import .*;\n/gm, "").replace("export default class Files", "return class Files"))(...Object.values(bindings));
   const view = new Files();
   return { view, commands, opened, set(agents: any[], panes: any[], current: any = null) { list = agents; paneList = panes; focus = current; }, menu(value: any) { menu = value; } };
 }
@@ -281,7 +295,7 @@ test("Files popup keyboard chooses the captured target and Escape never pastes",
   expect(h.commands).toEqual([["close"]]);
 });
 
-test("Files single click selects and double click opens a centered frozen preview", () => {
+test("Files single click selects and double click opens one reusable native preview", () => {
   const h = contextHarness();
   Object.assign(h.view, { context: { space: "s1" }, root: "/repo", on: "remote", entries: new Map([["", [{ name: "README.md", dir: false }]]]), folders: new Set(), marks: {} });
   const row = h.view.rows("", 0, [], {})[0];
@@ -289,7 +303,7 @@ test("Files single click selects and double click opens a centered frozen previe
   expect(h.view.selected).toBe("README.md");
   expect(h.opened).toEqual([]);
   row.calls.on_click[0]({ click_count: 2 }, contextCx);
-  expect(h.opened[0]).toMatchObject({ mod: "files", kind: "dialog", props: { preview: { root: "/repo", path: "README.md", on: "remote" } } });
+  expect(h.opened[0]).toMatchObject({ key: "files-preview", mod: "files", props: { windowKey: "files-preview", preview: { root: "/repo", path: "README.md", on: "remote" } } });
   expect(h.view.file).toBeUndefined();
 });
 
@@ -356,23 +370,29 @@ test("Files stages literal image bytes without treating paths as shell code", as
       return { code: await child.exited, stdout: await new Response(child.stdout).text(), stderr: await new Response(child.stderr).text() };
     });
     expect(await read(path, null)).toEqual(bytes);
-    await writeFile(path, Buffer.alloc(4194305));
-    await expect(read(path, null)).rejects.toThrow("4 MiB");
+    const large = Buffer.alloc(3 * 1048576 + 17, 129);
+    await writeFile(path, large);
+    expect(await read(path, null)).toEqual(large);
+    await expect(read(path, null, 1048576)).rejects.toThrow("1 MiB");
+    expect(await read(path, null, 1048577, true)).toEqual(large.subarray(0,1048577));
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
-test("Files rejects truncated image output and retries Windows on the captured machine", async () => {
+test("Files rejects truncated chunks and retries Windows on the captured machine", async () => {
   for (const stdout of ["", "eA", "eA==oops", "!@#$"]) {
-    await expect(mediaReader(async () => ({ code: 0, stdout, stderr: "" }))("/img.png", null)).rejects.toThrow("preview data");
+    let call = 0;
+    await expect(mediaReader(async () => ({ code: 0, stdout: call++ ? stdout : "1", stderr: "" }))("/img.png", null)).rejects.toThrow("preview data");
   }
   const calls: any[] = [];
+  let size = true;
   const read = mediaReader(async (command: string, args: string[], options: any) => {
     calls.push({ command, args, options });
     if (command === "sh") throw new Error("cannot start sh: program not found");
-    return { code: 0, stdout: "eA==", stderr: "" };
+    const stdout = size ? "1" : "eA=="; size = false;
+    return { code: 0, stdout, stderr: "" };
   });
   expect(await read("C:/O’Brien's.png", "win")).toEqual(Buffer.from("x"));
-  expect(calls.map(c => [c.command, c.options.on])).toEqual([["sh", "win"], ["powershell", "win"]]);
+  expect(calls.map(c => [c.command, c.options.on])).toEqual([["sh", "win"], ["powershell", "win"], ["powershell", "win"]]);
   expect(calls[1].args.at(-1)).toContain("'C:/O’’Brien''s.png'");
 });
 
@@ -457,4 +477,67 @@ test("Files can retry a PDF page after a render error", async () => {
   await h.view.readPdfPage(1);
   expect(h.view.fileError).toBeNull();
   expect(h.view.page).toBe(1);
+});
+
+test("Files stages Markdown references on the document machine and leaves network images to the browser", async () => {
+  for (const [root, expected] of [["/repo", "/repo/docs/images/a b.svg"], ["C:/Repo", "C:/Repo/docs/images/a b.svg"]]) {
+    const reads: any[] = [], writes: any[] = [];
+    const h = contextHarness({ mediaBytes: async (...args: any[]) => { reads.push(args); return Buffer.from("<svg/>"); }, writeFile: async (...args: any[]) => { writes.push(args); } });
+    h.view.preview = { root, path: "docs/readme.md", on: "remote" };
+    const images = await h.view.markdownImages("[![diagram][pic]](https://example.com)\n\n[pic]: images/a%20b.svg\n\n![web](https://example.com/x.png)\n![bad](data:image/png;base64,AA==)");
+    expect(reads).toEqual([[expected, "remote", 20 * 1048576]]);
+    expect(images["images/a%20b.svg"]).toEqual({ url: "image-0.svg" });
+    expect(images["https://example.com/x.png"]).toBeUndefined();
+    expect(images["data:image/png;base64,AA=="].error).toBeTruthy();
+    expect(writes).toHaveLength(1);
+  }
+});
+
+test("Files publishes a truncated text prefix and ignores a closed document", async () => {
+  const writes: any[] = [], reads: any[] = [];
+  const h = contextHarness({
+    mediaBytes: async (...args: any[]) => { reads.push(args); return Buffer.alloc(1048577, 65); },
+    writeFile: async (...args: any[]) => { writes.push(args); },
+    settings: () => ({}), EditorState: { new: (options: any) => options },
+  });
+  Object.assign(h.view, { preview: { root: "/repo", path: "big.java", on: "remote" }, windowKey: "files-preview", generation: "current" });
+  let task: Promise<void>;
+  h.view.loadPreview({ spawn: (fn: Function) => { task = fn(contextCx); } });
+  await task!;
+  expect(reads).toEqual([["/repo/big.java", "remote", 1048577, true]]);
+  const data = JSON.parse(writes.at(-1)[1]);
+  expect(data).toMatchObject({ kind: "text", truncated: true, generation: "current" });
+  expect(data.text.length).toBe(1048576);
+  expect(h.commands.at(-1)[0]).toBe("document");
+  h.view.closed = true;
+  const count = writes.length;
+  await h.view.publishDocument();
+  expect(writes.length).toBe(count);
+});
+
+test("Files ignores stale browser messages and routes only current window events", async () => {
+  const messages = ['not-browser', 'webview:invalid', 'webview:{"type":"close","generation":"old"}', 'webview:{"type":"page","generation":"current","page":2.5}', 'webview:{"type":"page","generation":"current","page":3}', 'webview:{"type":"close","generation":"current"}'];
+  const pages: number[] = [], closed: string[] = [];
+  const h = contextHarness({ nextCommand: async () => messages.shift(), closeWindow: (key: string) => { closed.push(key); h.view.closed = true; } });
+  Object.assign(h.view, { windowKey: "files-preview", generation: "current", page: 1, turnPage: (delta: number) => pages.push(delta) });
+  let task: Promise<void>;
+  h.view.listenWindow({ spawn: (fn: Function) => { task = fn(contextCx); } });
+  await task!;
+  expect(pages).toEqual([2]);
+  expect(closed).toEqual(["files-preview"]);
+});
+
+test("Files resolves parent, rooted and UNC Markdown images without escaping a drive or share", async () => {
+  for (const [root, src, expected] of [
+    ["/repo", "../assets/x%20.svg", "/repo/assets/x .svg"],
+    ["C:/Repo", "/images/a.png", "C:/images/a.png"],
+    ["\\\\host\\share\\repo", "../x.svg", "//host/share/repo/x.svg"],
+    ["C:/Repo", "D:/assets/a.png", "D:/assets/a.png"],
+  ]) {
+    const reads: string[] = [];
+    const h = contextHarness({ mediaBytes: async (path: string) => { reads.push(path); return Buffer.from("image"); } });
+    h.view.preview = { root, path: "docs/readme.md", on: "remote" };
+    await h.view.markdownImages(`![image](${src})`);
+    expect(reads).toEqual([expected]);
+  }
 });

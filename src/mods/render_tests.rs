@@ -126,7 +126,7 @@ fn module(values: BTreeMap<String, Value>, calls: Rc<RefCell<Calls>>) -> HostMod
         shared.borrow_mut().shared.insert(a.string(0)?.into(), from_host(a.value(1)?));
         Ok(HostValue::Null)
     });
-    for name in ["run", "playSound", "setAgentOrder", "openOverlay", "closeOverlay", "notify", "presentUpdateNotes"] {
+    for name in ["run", "playSound", "setAgentOrder", "openOverlay", "closeOverlay", "openWindow", "closeWindow", "setWindowDocument", "notify", "presentUpdateNotes"] {
         let calls = calls.clone();
         module = module.function(name, move |a| {
             if name == "run" {
@@ -139,7 +139,7 @@ fn module(values: BTreeMap<String, Value>, calls: Rc<RefCell<Calls>>) -> HostMod
                 .borrow_mut()
                 .effects
                 .push((name.into(), (0..2).filter_map(|i| a.get(i).map(from_host)).collect()));
-            Ok(if name == "openOverlay" || name == "notify" {
+            Ok(if name == "openOverlay" || name == "openWindow" || name == "notify" {
                 "fixture-overlay".into()
             } else {
                 HostValue::Null

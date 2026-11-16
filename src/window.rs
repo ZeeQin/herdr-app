@@ -565,6 +565,7 @@ impl AppWindow {
                 this.drain_documents(window, cx);
                 this.close_mods_now(std::time::Instant::now() + Duration::from_millis(250), window, cx);
             });
+            crate::mod_windows::close_all(cx);
             crate::place::save(window, cx);
             true
         });
@@ -3769,6 +3770,9 @@ impl AppWindow {
             Request::Run { name, args } => self.run(&name, args, window, cx),
             Request::OpenOverlay { id, spec } => self.open_overlay(id, spec, window, cx),
             Request::CloseOverlay { id } => self.close_overlay(&id, window, cx),
+            Request::OpenWindow { key, spec } => { crate::mod_windows::open(key, spec, cx); }
+            Request::CloseWindow { key } => crate::mod_windows::close(&key, cx),
+            Request::WindowDocument { copy, path } => crate::mod_windows::document(copy, &path, cx),
             Request::Refresh => self.refresh_mods(cx),
             Request::Control { cmd, reply } => {
                 let _ = reply.send(self.control(cmd, window, cx));

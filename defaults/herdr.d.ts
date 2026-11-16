@@ -24,7 +24,7 @@ export function appHome(): string;
 /** Reads UTF-8 text (up to 1 MiB), or null if absent. Runs off the UI thread.
  *  `on`: from that machine (a space's `machine`). */
 export function readTextFile(path: string, options?: { on?: string | null }): Promise<string | null>;
-/** Renders one page of a local PDF staged under appHome()/data/files (up to 4 MiB).
+/** Renders one page of a local PDF staged under appHome()/data/files (up to 50 MiB).
  *  Bundled CPU renderer; no external tool required. Page is 1-based (default 1).
  *  Width defaults to 1600, maximum 4096; output is bounded to 4 million pixels.
  *  Returns an app-relative path for image(). Caller owns and removes the generated PNG.
@@ -426,3 +426,9 @@ export function nextCommand(): Promise<string>;
  * Watch what you show, not a whole home folder (node_modules is a lot of events).
  */
 export function watchFolder(path: string): Promise<string[]>;
+
+/** Opens or updates a reusable native mod window; existing geometry is preserved. */
+export function openWindow(options: { key: string; mod: string; props?: unknown; title?: string; width?: number; height?: number }): string;
+export function closeWindow(key: string): null;
+/** Native-window copies only: displays staged HTML under appHome()/data/files. Browser IPC arrives as webview:<JSON> through nextCommand(). */
+export function setWindowDocument(path: string): null;

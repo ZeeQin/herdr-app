@@ -212,6 +212,18 @@
       "files": [
         "licenses/hayro-profiles.txt"
       ]
+    },
+    {
+      "name": "Files preview: Marked 15.0.12, DOMPurify 3.3.3, Mermaid 12.3.0, highlight.js 11.11.1",
+      "source": "https://registry.npmjs.org/ (pinned package versions and checksums in defaults/mods/files/vendor/README.md)",
+      "files": [
+        "defaults/mods/files/vendor/README.md",
+        "defaults/mods/files/vendor/LICENSE-marked",
+        "defaults/mods/files/vendor/LICENSE-purify",
+        "defaults/mods/files/vendor/LICENSE-mermaid",
+        "defaults/mods/files/vendor/LICENSE-mermaid-dependencies",
+        "defaults/mods/files/vendor/LICENSE-highlight"
+      ]
     }
   ]
 }

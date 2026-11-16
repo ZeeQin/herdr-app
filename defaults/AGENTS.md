@@ -191,15 +191,37 @@ choose a conversation from the menu. Files and conversations must be on the same
 machine (and drive/share); missing working directories and control characters in
 paths are reported instead of pasted. Paths with spaces are quoted; directory
 contents are not expanded or uploaded. Single-click selects a file; double-click
-opens a centered, read-only preview (Close or Esc dismisses it). Markdown opens
-rendered and can switch to Source; other text, including JSON and Java, uses the
-source viewer. Images fit the preview area and support wheel zoom, zoom buttons,
-and Fit; use the scrollbars to inspect a zoomed image. Text reads are limited to
-1 MiB and displayed text to 400,000 characters; image reads are limited to 4 MiB,
-including remote files. PDFs use the bundled renderer, open at page 1, and support
-previous/next page, a page count, and zoom. PDF inputs have the same 4 MiB limit;
-password-protected PDFs are unsupported. Unsupported, missing or unreadable files
-show an error.
+opens one reusable, independently movable/resizable system preview window. Close
+or Esc dismisses it. Markdown opens rendered and can switch to read-only Source;
+other text, including JSON, Java and Python, is syntax highlighted. Markdown
+Mermaid code blocks render diagrams; a bad diagram shows its error and source
+without hiding the rest of the document. Relative Markdown images resolve beside
+the document on the same machine, including remote workspaces. HTTP(S) images
+load automatically, so opening a document can contact its image servers.
+Click a Markdown image or Mermaid diagram to enlarge it inside the preview;
+Esc or the backdrop closes the enlargement and preserves the document position.
+Images, SVGs, PDFs and enlarged images support Fit, 100%, zoom buttons, macOS
+trackpad pinch zoom and two-finger panning. SVG SMIL/CSS animations play in both
+views; scripts inside SVG images never run. Text shows at most its first 1 MiB,
+with a truncation notice; binary text files report an error. Image/SVG file reads
+are bounded to 20 MiB, PDFs to 50 MiB, including remote-workspace files. Local
+Markdown image staging is bounded to 100 images / 50 MiB per document. PDF pages
+use the bundled renderer with previous/next navigation; password-protected PDFs
+are unsupported. Broken images and unsupported/unreadable files report errors.
+The browser surface uses system WebKit on macOS and WebView2 on Windows (the
+runtime must be installed); Linux retains the basic native preview with an
+explicit browser-unavailable notice, without Mermaid/animated SVG/lightbox.
+
+Mods can use `openWindow({ key, mod, props, title })` to open or replace a mod in
+one real system window per key, preserving its position/size; `closeWindow(key)`
+closes it. A mod in that window may call `setWindowDocument(absolutePath)` on a
+trusted HTML document staged under `appHome()/data/files`. Browser assets stay
+inside the document's directory; navigation, downloads and new windows are
+blocked. The browser's `window.ipc.postMessage(JSON.stringify(message))` arrives
+only at that window's owning mod via `nextCommand()` as `webview:<json>`; validate
+its shape and document generation. The mod owns temporary-file cleanup in
+`close()`, including on replacement. HTML uses the mod's own CSP and sanitization;
+never interpolate document content into executable markup.
 
 **Herdr's own layouts and mods are read-only.** They are replaced whole
 on every start. Use settings.json for look (fonts, sizes, theme, colors,

@@ -9,7 +9,7 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, atomic::{AtomicU64, Ordering}};
 
-const INPUT_LIMIT: u64 = 4 * 1024 * 1024;
+const INPUT_LIMIT: u64 = 50 * 1024 * 1024;
 const MAX_SIDE: u32 = 4096;
 const MAX_PIXELS: f32 = 4_000_000.0;
 static RENDER: Mutex<()> = Mutex::new(());
@@ -26,7 +26,7 @@ pub fn options(value: Value) -> Result<(usize, u32), HostError> {
 }
 
 fn rasterize(bytes: Vec<u8>, page: usize, width: u32) -> Result<(usize, Pixmap), String> {
-    if bytes.len() as u64 > INPUT_LIMIT { return Err("PDF preview limit: 4 MiB".into()); }
+    if bytes.len() as u64 > INPUT_LIMIT { return Err("PDF preview limit: 50 MiB".into()); }
     if width == 0 || width > MAX_SIDE { return Err("PDF width must be between 1 and 4096".into()); }
     let pdf = Pdf::new(bytes).map_err(|e| format!("Cannot read PDF (invalid or password protected): {e:?}"))?;
     let pages = pdf.pages().len();

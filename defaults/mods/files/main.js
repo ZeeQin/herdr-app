@@ -1,9 +1,11 @@
 // A lazy file browser for the focused pane's folder, with bounded read-only previews.
 import { View, div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, Editor, EditorState, TextView } from "gpui-base";
-import { spaces, panes, agents, focused, appHome, exec, renderPdf, readTextFile, watchFolder, theme, settings, window, props, openOverlay, closeOverlay, run } from "herdr";
-import { mkdir, writeFile, readdir, unlink, rmdir, exists } from "fs/promises";
+import { spaces, panes, agents, focused, appHome, exec, renderPdf, readTextFile, watchFolder, theme, settings, window, props, openOverlay, closeOverlay, openWindow, closeWindow, setWindowDocument, nextCommand, run } from "herdr";
+import { mkdir, writeFile, readFile, readdir, unlink, rmdir, exists } from "fs/promises";
 import { Buffer } from "buffer";
+import { marked } from "./vendor/marked-module.js";
+import { buildPreviewPage } from "./preview-page.js";
 
 function location() {
   const space = spaces().find(s => s.active), f = focused();
@@ -35,22 +37,36 @@ function relativePath(file, cwd) {
   return [...from.rest.slice(common).map(() => ".."), ...to.rest.slice(common)].join("/") || ".";
 }
 
-// Bound base64 twice (remote exec's JSON wrapper) below exec's 8 MiB output limit.
-async function mediaBytes(path, on) {
-  const powershell = async () => exec("powershell", ["-NoProfile", "-Command",
-    "& { param($p) $f=Get-Item -LiteralPath $p -ErrorAction Stop; if ($f.PSIsContainer -or $f.Length -gt 4194304) { throw 'Preview limit: 4 MiB' }; [Convert]::ToBase64String([IO.File]::ReadAllBytes($f.FullName)) } '" + path.replace(/['‘’‚‛]/g, "$&$&") + "'"], { on });
-  let result;
-  if (!on && window()?.platform === "windows") result = await powershell();
-  else {
-    try { result = await exec("sh", ["-c", 'test -f "$1" || exit 1; n=$(wc -c < "$1") || exit 1; test "$n" -le 4194304 || { echo "Preview limit: 4 MiB" >&2; exit 1; }; head -c 4194305 "$1" | base64', "preview", path], { on }); }
-    catch (e) { if (on && String(e).includes("cannot start sh: program not found")) result = await powershell(); else throw e; }
+// Each chunk stays below exec's 8 MiB output bound, including the remote JSON wrapper.
+async function mediaBytes(path, on, limit = 20 * 1024 * 1024, truncate = false) {
+  let windows = !on && window()?.platform === "windows";
+  const quote = value => "'" + value.replace(/['‘’‚‛]/g, "$&$&") + "'";
+  const call = async (offset, count) => {
+    const powershell = () => exec("powershell", ["-NoProfile", "-Command", offset === null ?
+      "& { param($p) $f=Get-Item -LiteralPath $p -ErrorAction Stop; if ($f.PSIsContainer) { throw 'Not a regular file' }; $f.Length } " + quote(path) :
+      "& { param($p,$offset,$count) $f=[IO.File]::OpenRead($p); try { $f.Position=$offset; $b=New-Object byte[] $count; $n=0; while ($n -lt $count) { $r=$f.Read($b,$n,$count-$n); if ($r -eq 0) { break }; $n+=$r }; [Convert]::ToBase64String($b,0,$n) } finally { $f.Dispose() } } " + quote(path) + ` ${offset} ${count}`], { on });
+    let result;
+    if (windows) result = await powershell();
+    else {
+      try { result = await exec("sh", ["-c", offset === null ? 'test -f "$1" || exit 1; wc -c < "$1"' : 'dd if="$1" bs=1048576 skip="$2" count=1 2>/dev/null | head -c "$3" | base64', "preview", path, String((offset ?? 0) / 1048576), String(count ?? 0)], { on }); }
+      catch (e) { if (on && String(e).includes("cannot start sh: program not found")) { windows = true; result = await powershell(); } else throw e; }
+    }
+    if (result.code !== 0) throw new Error(result.stderr || "Cannot read this file");
+    return result.stdout.trim();
+  };
+  const size = await call(null);
+  if (!/^\d+$/.test(size) || !Number.isSafeInteger(Number(size))) throw new Error("Invalid preview file size");
+  const length = Number(size);
+  if (!truncate && length > limit) throw new Error(`Preview limit: ${limit / 1048576} MiB`);
+  const take = Math.min(length, limit), chunks = [];
+  for (let offset = 0; offset < take; offset += 1048576) {
+    const count = Math.min(1048576, take - offset), encoded = (await call(offset, count)).replace(/\s/g, "");
+    if (!/^[A-Za-z0-9+/]*={0,2}$/.test(encoded) || encoded.length % 4 || encoded.length > Math.ceil(count / 3) * 4) throw new Error("Invalid or oversized preview data");
+    const bytes = Buffer.from(encoded, "base64");
+    if (bytes.length !== count) throw new Error("File changed or incomplete preview data");
+    chunks.push(bytes);
   }
-  if (result.code !== 0) throw new Error(result.stderr || "Cannot read this file");
-  const encoded = result.stdout.replace(/\s/g, "");
-  if (!encoded || encoded.length > 5592408 || !/^[A-Za-z0-9+/]*={0,2}$/.test(encoded) || encoded.length % 4) throw new Error("Invalid or oversized preview data");
-  const bytes = Buffer.from(encoded, "base64");
-  if (bytes.length > 4194304) throw new Error("Preview limit: 4 MiB");
-  return bytes;
+  return Buffer.concat(chunks);
 }
 
 async function directory(path, on) {
@@ -83,6 +99,9 @@ export default class Files extends View {
     this.preview = props()?.preview;
     if (this.preview) {
       this.handle = cx.focus_handle(); this.handle.focus();
+      this.windowKey = props()?.windowKey;
+      this.generation = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      if (this.windowKey) this.listenWindow(cx);
       this.zoom = 1; this.mode = "rendered"; this.viewport = { width: 800, height: 500 };
       this.loadPreview(cx);
       return;
@@ -219,40 +238,129 @@ export default class Files extends View {
     cx.notify();
   }
 
+  listenWindow(cx) {
+    cx.spawn(async cx => {
+      while (!this.closed) {
+        const command = await nextCommand();
+        if (this.closed || !command.startsWith("webview:")) continue;
+        let event;
+        try { event = JSON.parse(command.slice(8)); } catch { continue; }
+        if (event.type === "error") { this.browserError = event.message; cx.notify(); continue; }
+        if (event.generation !== this.generation) continue;
+        if (event.type === "close") closeWindow(this.windowKey);
+        else if (event.type === "page" && Number.isInteger(event.page)) this.turnPage(event.page - (this.page ?? 1), cx);
+      }
+    });
+  }
+
+  async stage(bytes, name) {
+    if (this.closed) return;
+    if (!this.temp) {
+      this.temp = `data/files/preview-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      await mkdir(`${appHome()}/${this.temp}`, { recursive: true });
+    }
+    if (this.closed) { await this.removeTemporary(); return; }
+    const path = `${this.temp}/${name}`;
+    await writeFile(`${appHome()}/${path}`, bytes);
+    if (this.closed) { await this.removeTemporary(); return; }
+    return path;
+  }
+
+  async markdownImages(text) {
+    const images = Object.create(null), sources = new Set();
+    marked.walkTokens(marked.lexer(text), token => {
+      if (token.type === "image") sources.add(token.href);
+    });
+    const windows = /^[a-z]:[\\/]|^(?:\\\\|\/\/)/i.test(this.preview.root);
+    const separators = value => windows ? value.replace(/\\/g, "/") : value;
+    const folder = separators(`${this.preview.root}/${this.preview.path}`).replace(/\/[^/]*$/, "");
+    const volume = windows ? folder.match(/^(?:[a-z]:|\/\/[^/]+\/[^/]+)/i)?.[0] ?? "" : "";
+    let index = 0, total = 0;
+    for (const src of sources) {
+      if (this.closed) break;
+      // Network images load directly in the browser; data URLs and arbitrary schemes are not files.
+      if (/^https?:\/\//i.test(src)) continue;
+      if (index >= 100 || total >= 50 * 1048576) { images[src] = { error: "Document image budget exceeded (100 images / 50 MiB)" }; continue; }
+      if (/^[a-z][a-z\d+.-]*:/i.test(src) && !/^[a-z]:[\\/]/i.test(src)) { images[src] = { error: "Unsupported image URL" }; continue; }
+      const number = index++;
+      try {
+        const path = separators(decodeURIComponent(src.split(/[?#]/)[0]));
+        if (/[\x00-\x1f\x7f]/.test(path)) throw new Error("Invalid image path");
+        const full = windows && /^(?:[a-z]:\/|\/\/)/i.test(path) ? path : path.startsWith("/") ? volume + path : `${folder}/${path}`;
+        const prefix = windows ? full.match(/^(?:[a-z]:|\/\/[^/]+\/[^/]+)/i)?.[0] : "";
+        if (windows && !prefix || !windows && !full.startsWith("/")) throw new Error("Image path must be absolute");
+        const parts = [];
+        for (const part of full.slice(prefix?.length ?? 0).split("/")) {
+          if (part === "..") parts.pop();
+          else if (part && part !== ".") parts.push(part);
+        }
+        const absolute = `${prefix ?? ""}/${parts.join("/")}`, ext = path.match(/\.[^./]*$/)?.[0].toLowerCase();
+        if (![".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff", ".tif", ".svg", ".ico", ".avif"].includes(ext)) throw new Error("Unsupported image format");
+        const bytes = await mediaBytes(absolute, this.preview.on, Math.min(20 * 1048576, 50 * 1048576 - total));
+        total += bytes.length;
+        const staged = await this.stage(bytes, `image-${number}${ext}`);
+        if (staged) images[src] = { url: staged.split("/").pop() };
+      } catch (e) { images[src] = { error: String(e.message ?? e) }; }
+    }
+    return images;
+  }
+
+  async publishDocument() {
+    if (!this.windowKey || this.closed) return;
+    if (!this.libraries) {
+      const base = `${appHome()}/${"mods/files"}`;
+      const names = ["vendor/marked.min.js", "vendor/purify.min.js", "vendor/mermaid.min.js", "vendor/highlight.min.js", "preview.css", "preview-client.js", "vendor/highlight.css"];
+      const parts = await Promise.all(names.map(path => readFile(`${base}/${path}`, "utf8")));
+      this.libraries = { marked: parts[0], purify: parts[1], mermaid: parts[2], highlight: parts[3], css: parts[4] + "\n" + parts[6], client: parts[5] };
+    }
+    if (this.closed) return;
+    const data = { path: this.preview.path, generation: this.generation,
+      kind: this.pdf ? "pdf" : this.asset ? "image" : this.markdown ? "markdown" : "text",
+      text: this.text ?? "", language: this.language, images: this.images ?? {},
+      src: this.asset?.split("/").pop(), width: this.rasterWidth, height: this.rasterHeight,
+      page: this.page, pages: this.pages, error: this.fileError, truncated: this.truncated };
+    const path = await this.stage(buildPreviewPage(data, this.libraries), "index.html");
+    if (!this.closed && path) setWindowDocument(`${appHome()}/${path}`);
+  }
+
   loadPreview(cx) {
     const { root, path, on } = this.preview;
     const ext = path.split(".").pop().toLowerCase();
     this.markdown = ext === "md" || ext === "markdown";
     this.pdf = ext === "pdf";
+    this.language = LANG[ext] ?? ({ py: "python", rb: "ruby", rs: "rust", sh: "bash" }[ext] || ext);
     cx.spawn(async cx => {
       if (this.closed) return;
       try {
-        if (this.pdf || ["png", "jpg", "jpeg", "gif", "webp", "bmp", "tiff", "tif", "svg", "ico"].includes(ext)) {
-          const bytes = await mediaBytes(`${root}/${path}`, on);
-          if (this.closed) return;
-          this.temp = `data/files/preview-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-          await mkdir(`${appHome()}/${this.temp}`, { recursive: true });
-          if (this.closed) { await this.removeTemporary(); return; }
-          const staged = `${this.temp}/source.${ext}`;
-          await writeFile(`${appHome()}/${staged}`, bytes);
-          if (this.closed) { await this.removeTemporary(); return; }
+        if (this.pdf || ["png", "jpg", "jpeg", "gif", "webp", "bmp", "tiff", "tif", "svg", "ico", "avif"].includes(ext)) {
+          const bytes = await mediaBytes(`${root}/${path}`, on, (this.pdf ? 50 : 20) * 1048576);
+          if (!bytes.length) throw new Error("This file is empty");
+          const staged = await this.stage(bytes, `source.${ext}`);
+          if (!staged || this.closed) return;
           if (this.pdf) {
             this.pdfFile = `${appHome()}/${staged}`;
             await this.readPdfPage(1);
           } else this.asset = staged;
         } else {
-          const text = await readTextFile(`${root}/${path}`, { on });
+          // Preserve a UTF-8 prefix even when the cut falls inside a multi-byte character.
+          const bytes = await mediaBytes(`${root}/${path}`, on, 1048577, true);
           if (this.closed) return;
-          if (text === null) throw new Error("This file is no longer available");
-          if (/[\x00-\x08\x0e-\x1f]/.test(text)) throw new Error("Binary file · no preview available");
-          this.text = text.length > 400000 ? text.slice(0, 400000) + "\n… (file truncated)" : text;
+          this.truncated = bytes.length > 1048576;
+          this.text = bytes.subarray(0, 1048576).toString("utf8");
+          if (/[\x00-\x08\x0e-\x1f]/.test(this.text)) throw new Error("Binary file · no preview available");
           const t = theme();
-          this.code = EditorState.new({ language: LANG[ext] ?? ext, readonly: true, value: this.text,
+          this.code = EditorState.new({ language: this.language, readonly: true, value: this.text,
             font_family: settings().font_family, font_size: 12,
             syntax: { keyword: t.ansi5, string: t.ansi2, comment: t.dim, function: t.ansi4, type: t.ansi3, number: t.ansi1, constant: t.ansi6 } });
+          if (this.markdown && this.windowKey) this.images = await this.markdownImages(this.text);
         }
-      } catch (error) { this.fileError = String(error.message ?? error); }
-      finally { if (!this.closed) cx.notify(); }
+      } catch (error) { if (!this.closed) this.fileError = String(error.message ?? error); }
+      finally {
+        if (!this.closed) {
+          try { await this.publishDocument(); } catch (error) { if (!this.closed) this.fileError = String(error.message ?? error); }
+          if (!this.closed) cx.notify();
+        }
+      }
     });
   }
 
@@ -263,6 +371,7 @@ export default class Files extends View {
       if (this.closed) return;
       const previous = this.asset;
       this.asset = result.path; this.page = page; this.pages = result.pages;
+      this.rasterWidth = result.width; this.rasterHeight = result.height;
       // A failed temporary-file removal is retried by close().
       if (previous) await unlink(`${appHome()}/${previous}`).catch(() => {});
     } catch (error) { this.fileError = String(error.message ?? error); }
@@ -273,7 +382,7 @@ export default class Files extends View {
     const page = (this.page ?? 1) + delta;
     if (this.closed || !this.pdfFile || this.pageLoading || page < 1 || (this.pages && page > this.pages)) return;
     this.pageLoading = true;
-    cx.spawn(async cx => { if (this.closed) return; await this.readPdfPage(page); if (!this.closed) cx.notify(); });
+    cx.spawn(async cx => { if (this.closed) return; await this.readPdfPage(page); if (!this.closed) { await this.publishDocument(); cx.notify(); } });
     cx.notify();
   }
 
@@ -302,7 +411,7 @@ export default class Files extends View {
     const button = (id, label, action) => div().id(id).px(10).py(5).rounded(6).cursor_pointer().hover(s => s.bg(t.hover))
       .on_click(action).child(label);
     return v_flex().id("files-preview").size_full().min_h(0).overflow_hidden().bg(t.background).text_color(t.foreground).text_size(13)
-      .track_focus(this.handle).on_key_down((e) => { if (e.key === "escape") closeOverlay(props()?.overlay); })
+      .track_focus(this.handle).on_key_down((e) => { if (e.key === "escape") this.windowKey ? closeWindow(this.windowKey) : closeOverlay(props()?.overlay); })
       .child(h_flex().h(46).flex_none().px(12).gap(6).items_center().border_b(1).border_color(t.border)
         .child(div().flex_1().min_w(0).truncate().child(this.preview.path))
         .when(this.markdown, el => el.children([
@@ -318,7 +427,8 @@ export default class Files extends View {
           div().text_color(t.dim).child(`${Math.round(this.zoom * 100)}%`),
           button("preview-plus", "+", (_e, cx) => this.changeZoom(1.25, cx)),
           button("preview-fit", "Fit", (_e, cx) => this.changeZoom(1, cx, true))]))
-        .child(button("preview-close", "Close · Esc", () => closeOverlay(props()?.overlay))))
+        .child(button("preview-close", "Close · Esc", () => this.windowKey ? closeWindow(this.windowKey) : closeOverlay(props()?.overlay))))
+      .when(Boolean(this.browserError), el => el.child(div().p(8).text_color(t.ansi3).child(this.browserError)))
       .child(this.fileError ? div().p(16).text_color(t.ansi1).child(this.fileError) : this.asset ?
         div().id("preview-image-scroll").flex_1().min_h(0).overflow_scrollbar()
           .on_size_change((size, cx) => { this.viewport = size; cx.notify(); })
@@ -344,8 +454,8 @@ export default class Files extends View {
         .on_click((e, cx) => {
           if (entry.dir) { this.toggle(path, cx); return; }
           this.selected = path; cx.notify();
-          if (e.click_count === 2) openOverlay({ mod: "files", kind: "dialog", width: 0.85, height: 0.85,
-            props: { preview: { root: this.root, path, on: this.on } } });
+          if (e.click_count === 2) openWindow({ key: "files-preview", mod: "files", title: path, width: 1000, height: 740,
+            props: { windowKey: "files-preview", preview: { root: this.root, path, on: this.on } } });
         })
         .child(entry.dir ? svg(`mods/files/chevron-${open ? "down" : "right"}.svg`).size(12).flex_none().text_color(t.dim) : div().w(12).flex_none())
         .child(svg(`mods/files/${entry.dir ? "folder" : "file"}.svg`).size(14).flex_none().text_color(t.muted))

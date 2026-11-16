@@ -18,3 +18,5 @@ The copies here come from the sources pinned in `inventory.json`. simdutf's embe
 Cargo-about covers the vendored GPUI crates as part of the Cargo graph. The separate native inventory covers Ghostty's VT build, not the unrelated libraries used only by Ghostty's full desktop app.
 
 PDF previews bundle hayro-font 0.5.0's PDFium/Foxit fonts, hayro-cmap 0.1.1's Adobe predefined CMaps, and hayro-interpret 0.9.0's CC0 color profiles. Their exact upstream asset notices are retained separately in the inventory; Cargo package licenses alone do not cover these asset notices.
+
+The Files browser preview bundles pinned Marked, DOMPurify, Mermaid and highlight.js browser distributions. Their package notices, Mermaid production dependency notices, package versions and source-file checksums are retained under `defaults/mods/files/vendor` and in the native inventory.
